@@ -18,10 +18,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/islandweave/islandweave/apps/gateway"
 	"github.com/islandweave/islandweave/core/beacon"
 	"github.com/islandweave/islandweave/core/identity"
+	"github.com/islandweave/islandweave/core/objects"
+	"github.com/islandweave/islandweave/core/services"
 	"github.com/islandweave/islandweave/core/storage"
 	"github.com/islandweave/islandweave/core/transport"
+	"github.com/islandweave/islandweave/protocols/iwtp"
 )
 
 // Config configures an islandd instance.
@@ -30,6 +34,7 @@ type Config struct {
 	NodeName      string
 	ListenAddr    string // P2P TCP address, e.g. "0.0.0.0:47472" or "127.0.0.1:0"
 	ControlAddr   string // Local control API address, e.g. "127.0.0.1:47471"
+	GatewayAddr   string // Local browser gateway address, e.g. "127.0.0.1:47475"
 	MulticastAddr string // UDP multicast address, default "239.255.73.87:47470"
 	DisableBeacon bool   // Optional flag for isolated unit tests
 }
@@ -39,7 +44,9 @@ type Daemon struct {
 	cfg          Config
 	id           *identity.NodeIdentity
 	store        *storage.Store
+	objStore     *objects.Store
 	beacon       *beacon.Service
+	gw           *gateway.Server
 	controlToken string
 
 	p2pLn     net.Listener
@@ -49,6 +56,11 @@ type Daemon struct {
 	mu    sync.RWMutex
 	links map[string]*transport.Link
 
+	waitMu     sync.Mutex
+	objWaiters map[string]chan iwtp.ObjDataPayload
+	svcWaiters map[string]chan []services.ServiceRecord
+
+	runCtx context.Context
 	cancel context.CancelFunc
 }
 
@@ -63,6 +75,9 @@ func New(cfg Config) (*Daemon, error) {
 	if cfg.ControlAddr == "" {
 		cfg.ControlAddr = "127.0.0.1:47471"
 	}
+	if cfg.GatewayAddr == "" {
+		cfg.GatewayAddr = "127.0.0.1:47475"
+	}
 	if cfg.MulticastAddr == "" {
 		cfg.MulticastAddr = beacon.DefaultMulticastAddr
 	}
@@ -75,6 +90,11 @@ func New(cfg Config) (*Daemon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open store: %w", err)
 	}
+	objStore, err := objects.NewStore(cfg.DataDir)
+	if err != nil {
+		store.Close()
+		return nil, fmt.Errorf("open object store: %w", err)
+	}
 	token, err := loadOrCreateToken(cfg.DataDir)
 	if err != nil {
 		store.Close()
@@ -85,9 +105,13 @@ func New(cfg Config) (*Daemon, error) {
 		cfg:          cfg,
 		id:           id,
 		store:        store,
+		objStore:     objStore,
 		controlToken: token,
 		links:        make(map[string]*transport.Link),
+		objWaiters:   make(map[string]chan iwtp.ObjDataPayload),
+		svcWaiters:   make(map[string]chan []services.ServiceRecord),
 	}
+	d.gw = gateway.New(store, objStore, d.FetchSite)
 	return d, nil
 }
 
@@ -119,6 +143,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 	_ = os.WriteFile(filepath.Join(d.cfg.DataDir, "islandd.pid"), []byte(fmt.Sprintf("%d", os.Getpid())), 0o600)
 
 	runCtx, cancel := context.WithCancel(ctx)
+	d.runCtx = runCtx
 	d.cancel = cancel
 
 	if !d.cfg.DisableBeacon {
@@ -137,6 +162,14 @@ func (d *Daemon) Start(ctx context.Context) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	if err := d.gw.Start(d.cfg.GatewayAddr); err != nil {
+		_ = ctrlLn.Close()
+		_ = p2pLn.Close()
+		cancel()
+		return fmt.Errorf("start gateway %s: %w", d.cfg.GatewayAddr, err)
+	}
+	_ = os.WriteFile(filepath.Join(d.cfg.DataDir, "gateway.addr"), []byte(d.gw.Addr()), 0o600)
+
 	go d.acceptLoop(runCtx)
 	go func() {
 		_ = d.httpSrv.Serve(ctrlLn)
@@ -152,6 +185,9 @@ func (d *Daemon) Stop() error {
 	}
 	if d.beacon != nil {
 		d.beacon.Stop()
+	}
+	if d.gw != nil {
+		d.gw.Stop()
 	}
 	if d.httpSrv != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -176,6 +212,7 @@ func (d *Daemon) NodeID() string      { return d.id.ID }
 func (d *Daemon) NodeName() string    { return d.id.Name }
 func (d *Daemon) P2PAddr() string     { return d.p2pLn.Addr().String() }
 func (d *Daemon) ControlAddr() string { return d.controlLn.Addr().String() }
+func (d *Daemon) GatewayAddr() string { return d.gw.Addr() }
 func (d *Daemon) Token() string       { return d.controlToken }
 
 func (d *Daemon) onPeerDiscovered(dp beacon.DiscoveredPeer, pub ed25519.PublicKey) {
@@ -289,7 +326,8 @@ func (d *Daemon) registerAndServeLink(ctx context.Context, link *transport.Link,
 	d.links[link.PeerID()] = link
 	d.mu.Unlock()
 
-	go d.readLinkLoop(ctx, link)
+	go d.readLinkLoop(d.runCtx, link)
+	go d.resumePendingTransfers(link)
 }
 
 func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
@@ -352,6 +390,8 @@ func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
 				Timestamp: time.Now().Unix(),
 				Payload:   env.Payload,
 			})
+		default:
+			d.handlePhase2Envelope(link, env)
 		}
 	}
 }

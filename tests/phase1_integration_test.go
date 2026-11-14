@@ -58,6 +58,7 @@ func TestPhase1TwoNodesDiscoverConnectMessageAndRevoke(t *testing.T) {
 		NodeName:      "node-alpha",
 		ListenAddr:    "127.0.0.1:0",
 		ControlAddr:   "127.0.0.1:0",
+		GatewayAddr:   "127.0.0.1:0",
 		MulticastAddr: mcast,
 	})
 	if err != nil {
@@ -73,6 +74,7 @@ func TestPhase1TwoNodesDiscoverConnectMessageAndRevoke(t *testing.T) {
 		NodeName:      "node-beta",
 		ListenAddr:    "127.0.0.1:0",
 		ControlAddr:   "127.0.0.1:0",
+		GatewayAddr:   "127.0.0.1:0",
 		MulticastAddr: mcast,
 	})
 	if err != nil {

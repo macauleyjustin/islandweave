@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/islandweave/islandweave/core/islands"
+	"github.com/islandweave/islandweave/core/services"
 	_ "modernc.org/sqlite"
 )
 
@@ -54,6 +55,7 @@ func Open(dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	db.SetMaxOpenConns(1)
 	s := &Store{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -99,6 +101,34 @@ func (s *Store) migrate() error {
 			timestamp INTEGER NOT NULL
 		);`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(timestamp DESC);`,
+		`CREATE TABLE IF NOT EXISTS services (
+			service_id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			type TEXT NOT NULL,
+			island_id TEXT NOT NULL,
+			publisher_id TEXT NOT NULL,
+			publisher_pub TEXT NOT NULL,
+			site_version INTEGER NOT NULL,
+			manifest_hash TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			signature TEXT NOT NULL,
+			is_local INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE TABLE IF NOT EXISTS transfers (
+			id TEXT PRIMARY KEY,
+			peer_id TEXT NOT NULL,
+			direction TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_size INTEGER NOT NULL,
+			file_hash TEXT NOT NULL,
+			chunks_json TEXT NOT NULL,
+			received_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			save_path TEXT NOT NULL,
+			error_msg TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -309,4 +339,165 @@ func (s *Store) ListMessages(limit int) ([]*MessageRecord, error) {
 		out = append(out, &m)
 	}
 	return out, rows.Err()
+}
+
+// ServiceEntry pairs a ServiceRecord with whether this node hosts it locally.
+type ServiceEntry struct {
+	services.ServiceRecord
+	IsLocal bool `json:"is_local"`
+}
+
+// TransferRecord persists IWTP file transfer state for progress tracking and resumption.
+type TransferRecord struct {
+	ID            string   `json:"id"`
+	PeerID        string   `json:"peer_id"`
+	Direction     string   `json:"direction"` // "outbound" | "inbound"
+	FileName      string   `json:"file_name"`
+	FileSize      int64    `json:"file_size"`
+	FileHash      string   `json:"file_hash"`
+	Chunks        []string `json:"chunks"`
+	ReceivedCount int      `json:"received_count"`
+	ReceivedMap   []bool   `json:"received_map"`
+	Status        string   `json:"status"` // "pending" | "active" | "completed" | "canceled" | "failed"
+	SavePath      string   `json:"save_path"`
+	ErrorMsg      string   `json:"error_msg,omitempty"`
+	UpdatedAt     int64    `json:"updated_at"`
+}
+
+// SaveService inserts or updates a service record.
+func (s *Store) SaveService(rec *services.ServiceRecord, isLocal bool) error {
+	localInt := 0
+	if isLocal {
+		localInt = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO services (service_id, name, type, island_id, publisher_id, publisher_pub, site_version, manifest_hash, created_at, expires_at, signature, is_local)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(service_id) DO UPDATE SET
+		   name = excluded.name,
+		   site_version = excluded.site_version,
+		   manifest_hash = excluded.manifest_hash,
+		   created_at = excluded.created_at,
+		   expires_at = excluded.expires_at,
+		   signature = excluded.signature,
+		   is_local = MAX(services.is_local, excluded.is_local)`,
+		rec.ServiceID, rec.Name, rec.Type, rec.IslandID, rec.PublisherID, rec.PublisherPub,
+		rec.SiteVersion, rec.ManifestHash, rec.CreatedAt, rec.ExpiresAt, rec.Signature, localInt,
+	)
+	return err
+}
+
+// GetServiceByNameOrID looks up a service by ServiceID or human-readable Name.
+func (s *Store) GetServiceByNameOrID(nameOrID string) (*ServiceEntry, error) {
+	row := s.db.QueryRow(
+		`SELECT service_id, name, type, island_id, publisher_id, publisher_pub, site_version, manifest_hash, created_at, expires_at, signature, is_local
+		 FROM services WHERE service_id = ? OR name = ? ORDER BY is_local DESC, site_version DESC LIMIT 1`,
+		nameOrID, nameOrID,
+	)
+	var e ServiceEntry
+	var localInt int
+	if err := row.Scan(&e.ServiceID, &e.Name, &e.Type, &e.IslandID, &e.PublisherID, &e.PublisherPub,
+		&e.SiteVersion, &e.ManifestHash, &e.CreatedAt, &e.ExpiresAt, &e.Signature, &localInt); err != nil {
+		return nil, err
+	}
+	e.Version = 1
+	e.IsLocal = localInt != 0
+	return &e, nil
+}
+
+// ListServices returns all known services (local and discovered/cached).
+func (s *Store) ListServices() ([]*ServiceEntry, error) {
+	rows, err := s.db.Query(
+		`SELECT service_id, name, type, island_id, publisher_id, publisher_pub, site_version, manifest_hash, created_at, expires_at, signature, is_local
+		 FROM services ORDER BY is_local DESC, created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ServiceEntry
+	for rows.Next() {
+		var e ServiceEntry
+		var localInt int
+		if err := rows.Scan(&e.ServiceID, &e.Name, &e.Type, &e.IslandID, &e.PublisherID, &e.PublisherPub,
+			&e.SiteVersion, &e.ManifestHash, &e.CreatedAt, &e.ExpiresAt, &e.Signature, &localInt); err != nil {
+			return nil, err
+		}
+		e.Version = 1
+		e.IsLocal = localInt != 0
+		out = append(out, &e)
+	}
+	return out, rows.Err()
+}
+
+// SaveTransfer inserts or updates an IWTP transfer record.
+func (s *Store) SaveTransfer(tr *TransferRecord) error {
+	if tr.UpdatedAt == 0 {
+		tr.UpdatedAt = time.Now().Unix()
+	}
+	chunksJSON, _ := json.Marshal(tr.Chunks)
+	recJSON, _ := json.Marshal(tr.ReceivedMap)
+	_, err := s.db.Exec(
+		`INSERT INTO transfers (id, peer_id, direction, file_name, file_size, file_hash, chunks_json, received_json, status, save_path, error_msg, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   received_json = excluded.received_json,
+		   status = excluded.status,
+		   save_path = excluded.save_path,
+		   error_msg = excluded.error_msg,
+		   updated_at = excluded.updated_at`,
+		tr.ID, tr.PeerID, tr.Direction, tr.FileName, tr.FileSize, tr.FileHash,
+		string(chunksJSON), string(recJSON), tr.Status, tr.SavePath, tr.ErrorMsg, tr.UpdatedAt,
+	)
+	return err
+}
+
+// GetTransfer retrieves a transfer by ID.
+func (s *Store) GetTransfer(id string) (*TransferRecord, error) {
+	row := s.db.QueryRow(
+		`SELECT id, peer_id, direction, file_name, file_size, file_hash, chunks_json, received_json, status, save_path, error_msg, updated_at
+		 FROM transfers WHERE id = ?`, id,
+	)
+	return scanTransfer(row)
+}
+
+// ListTransfers returns recent transfers.
+func (s *Store) ListTransfers(limit int) ([]*TransferRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(
+		`SELECT id, peer_id, direction, file_name, file_size, file_hash, chunks_json, received_json, status, save_path, error_msg, updated_at
+		 FROM transfers ORDER BY updated_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*TransferRecord
+	for rows.Next() {
+		tr, err := scanTransfer(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tr)
+	}
+	return out, rows.Err()
+}
+
+func scanTransfer(s scanner) (*TransferRecord, error) {
+	var tr TransferRecord
+	var chunksRaw, recRaw string
+	if err := s.Scan(&tr.ID, &tr.PeerID, &tr.Direction, &tr.FileName, &tr.FileSize, &tr.FileHash,
+		&chunksRaw, &recRaw, &tr.Status, &tr.SavePath, &tr.ErrorMsg, &tr.UpdatedAt); err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(chunksRaw), &tr.Chunks)
+	_ = json.Unmarshal([]byte(recRaw), &tr.ReceivedMap)
+	for _, ok := range tr.ReceivedMap {
+		if ok {
+			tr.ReceivedCount++
+		}
+	}
+	return &tr, nil
 }

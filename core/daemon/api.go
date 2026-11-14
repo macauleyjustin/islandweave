@@ -24,6 +24,12 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/beacon", d.handleBeacon)
 	mux.HandleFunc("/v1/messages", d.handleMessages)
 	mux.HandleFunc("/v1/messages/send", d.handleMessageSend)
+	mux.HandleFunc("/v1/services", d.handleServices)
+	mux.HandleFunc("/v1/services/host", d.handleServiceHost)
+	mux.HandleFunc("/v1/services/fetch", d.handleServiceFetch)
+	mux.HandleFunc("/v1/transfers", d.handleTransfers)
+	mux.HandleFunc("/v1/transfers/send", d.handleTransferSend)
+	mux.HandleFunc("/v1/transfers/cancel", d.handleTransferCancel)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -52,6 +58,7 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"node_name":    d.id.Name,
 		"p2p_addr":     d.P2PAddr(),
 		"control_addr": d.ControlAddr(),
+		"gateway_addr": d.GatewayAddr(),
 		"islands":      len(isl),
 		"known_peers":  len(peers),
 		"active_links": activeLinks,
@@ -357,4 +364,118 @@ func (d *Daemon) handleMessageSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)
+}
+
+func (d *Daemon) handleServices(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	list, err := d.store.ListServices()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleServiceHost(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Dir      string `json:"dir"`
+		Name     string `json:"name"`
+		IslandID string `json:"island_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Dir == "" {
+		writeErr(w, http.StatusBadRequest, "dir is required")
+		return
+	}
+	rec, manifest, err := d.HostSite(req.Dir, req.Name, req.IslandID)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"service":     rec,
+		"files_count": len(manifest.Files),
+		"gateway_url": "http://" + d.GatewayAddr() + "/site/" + rec.Name + "/",
+	})
+}
+
+func (d *Daemon) handleServiceFetch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		NameOrID string `json:"name_or_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NameOrID == "" {
+		writeErr(w, http.StatusBadRequest, "name_or_id is required")
+		return
+	}
+	if err := d.FetchSite(r.Context(), req.NameOrID); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status":      "cached",
+		"gateway_url": "http://" + d.GatewayAddr() + "/site/" + req.NameOrID + "/",
+	})
+}
+
+func (d *Daemon) handleTransfers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	list, err := d.store.ListTransfers(100)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleTransferSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		To       string `json:"to"`
+		FilePath string `json:"file_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" || req.FilePath == "" {
+		writeErr(w, http.StatusBadRequest, "to and file_path are required")
+		return
+	}
+	tr, err := d.SendFile(r.Context(), req.To, req.FilePath)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, tr)
+}
+
+func (d *Daemon) handleTransferCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		TransferID string `json:"transfer_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.TransferID == "" {
+		writeErr(w, http.StatusBadRequest, "transfer_id is required")
+		return
+	}
+	if err := d.CancelTransfer(req.TransferID); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled", "transfer_id": req.TransferID})
 }

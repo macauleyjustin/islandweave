@@ -295,6 +295,86 @@ func main() {
 		out, code, err := c.do(http.MethodGet, "/v1/messages", nil)
 		fatalIf(err)
 		printResp(out, code)
+	case "host":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island host <dir> [--name <name>] [--island <id>]")
+			os.Exit(1)
+		}
+		dir := rest[0]
+		fs := flag.NewFlagSet("host", flag.ExitOnError)
+		name := fs.String("name", "", "Website name")
+		islandID := fs.String("island", "", "Island ID")
+		_ = fs.Parse(rest[1:])
+		absDir, err := filepath.Abs(dir)
+		fatalIf(err)
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/services/host", map[string]string{
+			"dir":       absDir,
+			"name":      *name,
+			"island_id": *islandID,
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "services":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/services", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "fetch":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island fetch <service-name-or-id>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/services/fetch", map[string]string{
+			"name_or_id": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "send":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island send <file> --to <node-id>")
+			os.Exit(1)
+		}
+		filePath := rest[0]
+		fs := flag.NewFlagSet("send", flag.ExitOnError)
+		to := fs.String("to", "", "Recipient Node ID")
+		_ = fs.Parse(rest[1:])
+		if *to == "" {
+			fmt.Fprintln(os.Stderr, "--to <node-id> is required")
+			os.Exit(1)
+		}
+		absFile, err := filepath.Abs(filePath)
+		fatalIf(err)
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/transfers/send", map[string]string{
+			"to":        *to,
+			"file_path": absFile,
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "transfers":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/transfers", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "cancel-transfer":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island cancel-transfer <transfer-id>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/transfers/cancel", map[string]string{
+			"transfer_id": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
 	default:
 		printUsage()
 		os.Exit(1)
@@ -352,5 +432,11 @@ Commands:
   revoke <node-id>                     Revoke a peer and close active link
   beacon on|off|status                 Control Beacon Mode
   send-msg <node-id> <message>         Send an encrypted message to a peer
-  messages                             List stored messages`)
+  messages                             List stored messages
+  host <dir> [--name <name>]           Host a static website on IslandWeave
+  services                             List hosted and cached services
+  fetch <service-name-or-id>           Fetch and cache a peer's website locally
+  send <file> --to <node-id>           Send a file via IWTP
+  transfers                            List active and completed file transfers
+  cancel-transfer <transfer-id>        Cancel a file transfer`)
 }

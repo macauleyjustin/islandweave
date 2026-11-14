@@ -27,6 +27,7 @@ func main() {
 	name := flag.String("name", "", "Node display name (used when initializing new identity)")
 	listenAddr := flag.String("listen", "0.0.0.0:47472", "P2P TCP listen address")
 	controlAddr := flag.String("control", "127.0.0.1:47471", "Local authenticated control API address")
+	gatewayAddr := flag.String("gateway", "127.0.0.1:47475", "Local HTTP browser gateway address")
 	multicastAddr := flag.String("multicast", beacon.DefaultMulticastAddr, "UDP multicast discovery address")
 	flag.Parse()
 
@@ -35,6 +36,7 @@ func main() {
 		NodeName:      *name,
 		ListenAddr:    *listenAddr,
 		ControlAddr:   *controlAddr,
+		GatewayAddr:   *gatewayAddr,
 		MulticastAddr: *multicastAddr,
 	})
 	if err != nil {
@@ -52,6 +54,7 @@ func main() {
 	fmt.Printf("  Node ID:      %s (%s)\n", d.NodeID(), d.NodeName())
 	fmt.Printf("  P2P Listen:   %s\n", d.P2PAddr())
 	fmt.Printf("  Control API:  %s\n", d.ControlAddr())
+	fmt.Printf("  Gateway HTTP: http://%s\n", d.GatewayAddr())
 	fmt.Printf("  Data Dir:     %s\n", *dataDir)
 
 	<-ctx.Done()
