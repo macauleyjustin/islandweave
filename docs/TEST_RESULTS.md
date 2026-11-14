@@ -17,7 +17,10 @@ Executed on `darwin/arm64` (Go 1.27.4) after final Phase 2 edits:
 | `tests` | `TestPhase2TransferResumeAfterReconnect` | PASS | 0.39s |
 | `tests` | `TestPhase3CourierRelayNeverSimultaneouslyOnline` | PASS | 0.33s |
 | `tests` | `TestPhase3PhysicalCourierExportImportAndQuota` | PASS | 0.11s |
-| `tests` | `TestPhase4MailAndBulletinThroughCourier` | PASS | 0.43s |
+| `tests` | `TestPhase4MailAndBulletinThroughCourier` | PASS | 0.44s |
+| `tests` | `TestPhase5VPSRelayWithoutPlaintextAccess` | PASS | 0.22s |
+| `tests` | `TestPhase5TorOnlyPolicyNeverFallsBackToDirect` | PASS | 0.06s |
+| `tests` | `TestPhase5IslandFederation` | PASS | 0.03s |
 
 ### Verified Scenarios
 1. **Unauthenticated Control API rejection:** `GET /v1/status` without bearer token returns `401 Unauthorized`.

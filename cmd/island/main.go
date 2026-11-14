@@ -486,6 +486,69 @@ func main() {
 		out, code, err := c.do(http.MethodGet, "/v1/bulletins", nil)
 		fatalIf(err)
 		printResp(out, code)
+	case "server":
+		if len(rest) < 1 || (rest[0] != "enable" && rest[0] != "disable") {
+			fmt.Fprintln(os.Stderr, "usage: island server <enable|disable>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/server/enable", map[string]bool{"relay_enabled": rest[0] == "enable"})
+		fatalIf(err)
+		printResp(out, code)
+	case "tor":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island tor <status|config> [--policy ...] [--socks ...]")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		switch rest[0] {
+		case "status":
+			out, code, err := c.do(http.MethodGet, "/v1/tor/status", nil)
+			fatalIf(err)
+			printResp(out, code)
+		case "config":
+			fs := flag.NewFlagSet("tor-config", flag.ExitOnError)
+			policy := fs.String("policy", "tor-only", "Policy: direct-first|tor-preferred|tor-only")
+			socks := fs.String("socks", "127.0.0.1:9050", "SOCKS5 proxy address")
+			onion := fs.String("onion", "", "Configured .onion:port address")
+			_ = fs.Parse(rest[1:])
+			out, code, err := c.do(http.MethodPost, "/v1/tor/config", map[string]string{
+				"policy":        *policy,
+				"socks_addr":    *socks,
+				"onion_service": *onion,
+			})
+			fatalIf(err)
+			printResp(out, code)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown tor subcommand: %s\n", rest[0])
+			os.Exit(1)
+		}
+	case "federation":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island federation <list|revoke> [args]")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		switch rest[0] {
+		case "list":
+			out, code, err := c.do(http.MethodGet, "/v1/federation", nil)
+			fatalIf(err)
+			printResp(out, code)
+		case "revoke":
+			if len(rest) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: island federation revoke <agreement-id>")
+				os.Exit(1)
+			}
+			out, code, err := c.do(http.MethodPost, "/v1/federation/revoke", map[string]string{"agreement_id": rest[1]})
+			fatalIf(err)
+			printResp(out, code)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown federation subcommand: %s\n", rest[0])
+			os.Exit(1)
+		}
 	default:
 		printUsage()
 		os.Exit(1)

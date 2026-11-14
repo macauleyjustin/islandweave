@@ -12,6 +12,7 @@ import (
 
 	"github.com/islandweave/islandweave/core/islands"
 	"github.com/islandweave/islandweave/core/services"
+	"github.com/islandweave/islandweave/federation"
 	"github.com/islandweave/islandweave/protocols/iwbn"
 	"github.com/islandweave/islandweave/protocols/iwmp"
 	_ "modernc.org/sqlite"
@@ -190,6 +191,20 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS bulletin_subscriptions (
 			channel TEXT PRIMARY KEY,
 			subscribed_at INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS federations (
+			agreement_id TEXT PRIMARY KEY,
+			local_island_id TEXT NOT NULL,
+			local_island_pub TEXT NOT NULL,
+			remote_island_id TEXT NOT NULL,
+			shared_services_json TEXT NOT NULL,
+			allowed_identities_json TEXT NOT NULL,
+			allow_bulletin_sync INTEGER NOT NULL DEFAULT 0,
+			allow_dtn_forward INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			revoked INTEGER NOT NULL DEFAULT 0,
+			signature TEXT NOT NULL
 		);`,
 	}
 	for _, stmt := range stmts {
@@ -829,6 +844,73 @@ func (s *Store) ListSubscriptions() ([]string, error) {
 			return nil, err
 		}
 		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+// SaveFederation persists a signed Island federation agreement.
+func (s *Store) SaveFederation(ag *federation.Agreement) error {
+	svcJSON, _ := json.Marshal(ag.SharedServices)
+	idJSON, _ := json.Marshal(ag.AllowedIdentities)
+	bInt, dInt, rInt := 0, 0, 0
+	if ag.AllowBulletinSync {
+		bInt = 1
+	}
+	if ag.AllowDTNForward {
+		dInt = 1
+	}
+	if ag.Revoked {
+		rInt = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO federations (agreement_id, local_island_id, local_island_pub, remote_island_id, shared_services_json, allowed_identities_json, allow_bulletin_sync, allow_dtn_forward, created_at, expires_at, revoked, signature)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(agreement_id) DO UPDATE SET revoked = excluded.revoked`,
+		ag.AgreementID, ag.LocalIslandID, ag.LocalIslandPub, ag.RemoteIslandID,
+		string(svcJSON), string(idJSON), bInt, dInt, ag.CreatedAt, ag.ExpiresAt, rInt, ag.Signature,
+	)
+	return err
+}
+
+// RevokeFederation marks a federation agreement as revoked.
+func (s *Store) RevokeFederation(agreementID string) error {
+	res, err := s.db.Exec(`UPDATE federations SET revoked = 1 WHERE agreement_id = ?`, agreementID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// ListFederations returns all stored federation agreements.
+func (s *Store) ListFederations() ([]*federation.Agreement, error) {
+	rows, err := s.db.Query(
+		`SELECT agreement_id, local_island_id, local_island_pub, remote_island_id, shared_services_json, allowed_identities_json, allow_bulletin_sync, allow_dtn_forward, created_at, expires_at, revoked, signature
+		 FROM federations ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*federation.Agreement
+	for rows.Next() {
+		var ag federation.Agreement
+		var svcRaw, idRaw string
+		var bInt, dInt, rInt int
+		if err := rows.Scan(&ag.AgreementID, &ag.LocalIslandID, &ag.LocalIslandPub, &ag.RemoteIslandID,
+			&svcRaw, &idRaw, &bInt, &dInt, &ag.CreatedAt, &ag.ExpiresAt, &rInt, &ag.Signature); err != nil {
+			return nil, err
+		}
+		ag.Version = 1
+		_ = json.Unmarshal([]byte(svcRaw), &ag.SharedServices)
+		_ = json.Unmarshal([]byte(idRaw), &ag.AllowedIdentities)
+		ag.AllowBulletinSync = bInt != 0
+		ag.AllowDTNForward = dInt != 0
+		ag.Revoked = rInt != 0
+		out = append(out, &ag)
 	}
 	return out, rows.Err()
 }

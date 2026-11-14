@@ -1,0 +1,19 @@
+[Unit]
+Description=IslandWeave Core Networking Daemon (islandd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=islandweave
+Group=islandweave
+ExecStart=/usr/local/bin/islandd --data-dir /var/lib/islandweave --listen 0.0.0.0:47472 --control 127.0.0.1:47471 --relay
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/islandweave
+
+[Install]
+WantedBy=multi-user.target

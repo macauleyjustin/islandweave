@@ -26,6 +26,7 @@ import (
 	"github.com/islandweave/islandweave/core/storage"
 	"github.com/islandweave/islandweave/core/transport"
 	"github.com/islandweave/islandweave/protocols/iwtp"
+	"github.com/islandweave/islandweave/transports/tor"
 )
 
 // Config configures an islandd instance.
@@ -36,9 +37,11 @@ type Config struct {
 	ControlAddr              string // Local control API address, e.g. "127.0.0.1:47471"
 	GatewayAddr              string // Local browser gateway address, e.g. "127.0.0.1:47475"
 	MulticastAddr            string // UDP multicast address, default "239.255.73.87:47470"
-	DisableBeacon            bool   // Optional flag for isolated unit tests
-	DisableCourierForwarding bool   // Disable intermediate DTN bundle forwarding
-	MaxCourierBytes          int64  // Courier storage quota in bytes (default 64 MiB)
+	DisableBeacon            bool       // Optional flag for isolated unit tests
+	DisableCourierForwarding bool       // Disable intermediate DTN bundle forwarding
+	MaxCourierBytes          int64      // Courier storage quota in bytes (default 64 MiB)
+	RelayEnabled             bool       // Headless VPS encrypted relay mode (default false)
+	Tor                      tor.Config // Tor transport policy & SOCKS5 settings
 }
 
 // Daemon is the core IslandWeave networking engine (islandd).
@@ -255,8 +258,15 @@ func (d *Daemon) authorizePeer(peerID string, _ ed25519.PublicKey, sharedIslands
 			return true
 		}
 	}
-	// Allow if nodes share at least one Island membership.
-	return len(sharedIslands) > 0
+	if len(sharedIslands) > 0 {
+		return true
+	}
+	// If explicitly configured as a VPS relay, allow non-revoked peers to use relay forwarding
+	// without granting the relay any Island administrative keys.
+	d.mu.RLock()
+	relay := d.cfg.RelayEnabled
+	d.mu.RUnlock()
+	return relay
 }
 
 func (d *Daemon) acceptLoop(ctx context.Context) {
@@ -288,26 +298,51 @@ func (d *Daemon) handleInbound(ctx context.Context, conn net.Conn) {
 	d.registerAndServeLink(ctx, link, "inbound")
 }
 
-// ConnectPeer dials addr, completes IWP-LINK/1 handshake, and registers the active link.
+// ConnectPeer dials addr (and optional onionAddr) using the configured Tor/direct policy,
+// completes the IWP-LINK/1 handshake, and registers the active link.
 func (d *Daemon) ConnectPeer(ctx context.Context, addr string) (*transport.Link, error) {
-	link, err := transport.DialAndHandshake(addr, transport.HandshakeConfig{
-		Identity:      d.id,
-		Capabilities:  []string{transport.DefaultCapabilityMsg},
-		IslandIDs:     d.currentIslandIDs(),
-		AuthorizePeer: d.authorizePeer,
-	})
+	return d.ConnectPeerWithOnion(ctx, addr, "")
+}
+
+// ConnectPeerWithOnion dials directAddr or onionAddr strictly obeying the node's Tor policy.
+func (d *Daemon) ConnectPeerWithOnion(ctx context.Context, directAddr, onionAddr string) (*transport.Link, error) {
+	d.mu.RLock()
+	torCfg := d.cfg.Tor
+	d.mu.RUnlock()
+
+	conn, via, err := tor.DialWithPolicy(torCfg, directAddr, onionAddr, transport.HandshakeTimeout)
 	if err != nil {
 		return nil, err
 	}
-	_ = d.store.UpsertPeer(&storage.PeerRecord{
-		NodeID:    link.PeerID(),
-		PublicKey: link.PeerPub(),
-		Addrs:     []string{addr},
-		Islands:   link.SharedIslands(),
-		LastSeen:  time.Now().Unix(),
-		Source:    "manual",
+	link, err := transport.HandshakeInitiator(conn, transport.HandshakeConfig{
+		Identity:     d.id,
+		Capabilities: []string{transport.DefaultCapabilityMsg},
+		IslandIDs:    d.currentIslandIDs(),
+		AuthorizePeer: func(peerID string, _ ed25519.PublicKey, _ []string) bool {
+			if p, err := d.store.GetPeer(peerID); err == nil && p.Revoked {
+				return false
+			}
+			return true
+		},
 	})
-	d.registerAndServeLink(ctx, link, "outbound")
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	storedAddr := directAddr
+	if storedAddr == "" {
+		storedAddr = onionAddr
+	}
+	_ = d.store.UpsertPeer(&storage.PeerRecord{
+		NodeID:       link.PeerID(),
+		PublicKey:    link.PeerPub(),
+		EncPublicKey: link.PeerEncPub(),
+		Addrs:        []string{storedAddr},
+		Islands:      link.SharedIslands(),
+		LastSeen:     time.Now().Unix(),
+		Source:       "manual-" + via,
+	})
+	d.registerAndServeLink(ctx, link, "outbound-"+via)
 	return link, nil
 }
 

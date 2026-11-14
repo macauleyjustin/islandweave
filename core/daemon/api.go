@@ -10,7 +10,9 @@ import (
 	"github.com/islandweave/islandweave/core/identity"
 	"github.com/islandweave/islandweave/core/islands"
 	"github.com/islandweave/islandweave/core/storage"
+	"github.com/islandweave/islandweave/federation"
 	"github.com/islandweave/islandweave/protocols/iwmp"
+	"github.com/islandweave/islandweave/transports/tor"
 )
 
 func (d *Daemon) registerRoutes(mux *http.ServeMux) {
@@ -44,6 +46,13 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/bulletins", d.handleBulletins)
 	mux.HandleFunc("/v1/bulletins/publish", d.handleBulletinPublish)
 	mux.HandleFunc("/v1/bulletins/subscribe", d.handleBulletinSubscribe)
+	mux.HandleFunc("/v1/server/enable", d.handleServerEnable)
+	mux.HandleFunc("/v1/tor/status", d.handleTorStatus)
+	mux.HandleFunc("/v1/tor/config", d.handleTorConfig)
+	mux.HandleFunc("/v1/federation", d.handleFederationList)
+	mux.HandleFunc("/v1/federation/create", d.handleFederationCreate)
+	mux.HandleFunc("/v1/federation/import", d.handleFederationImport)
+	mux.HandleFunc("/v1/federation/revoke", d.handleFederationRevoke)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -239,13 +248,14 @@ func (d *Daemon) handlePeerConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Addr string `json:"addr"`
+		Addr      string `json:"addr"`
+		OnionAddr string `json:"onion_addr"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Addr == "" {
-		writeErr(w, http.StatusBadRequest, "addr is required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Addr == "" && req.OnionAddr == "") {
+		writeErr(w, http.StatusBadRequest, "addr or onion_addr is required")
 		return
 	}
-	link, err := d.ConnectPeer(r.Context(), req.Addr)
+	link, err := d.ConnectPeerWithOnion(r.Context(), req.Addr, req.OnionAddr)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
@@ -732,4 +742,140 @@ func (d *Daemon) handleBulletinSubscribe(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "subscribed", "channel": req.Channel})
+}
+
+func (d *Daemon) handleServerEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		RelayEnabled bool `json:"relay_enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	d.mu.Lock()
+	d.cfg.RelayEnabled = req.RelayEnabled
+	d.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]bool{"relay_enabled": req.RelayEnabled})
+}
+
+func (d *Daemon) handleTorStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	d.mu.RLock()
+	cfg := d.cfg.Tor
+	d.mu.RUnlock()
+	if cfg.Policy == "" {
+		cfg.Policy = tor.PolicyDirectFirst
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (d *Daemon) handleTorConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req tor.Config
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	d.mu.Lock()
+	d.cfg.Tor = req
+	d.mu.Unlock()
+	writeJSON(w, http.StatusOK, req)
+}
+
+func (d *Daemon) handleFederationList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	list, err := d.store.ListFederations()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleFederationCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		LocalIslandID     string   `json:"local_island_id"`
+		RemoteIslandID    string   `json:"remote_island_id"`
+		SharedServices    []string `json:"shared_services"`
+		AllowedIdentities []string `json:"allowed_identities"`
+		AllowBulletinSync bool     `json:"allow_bulletin_sync"`
+		AllowDTNForward   bool     `json:"allow_dtn_forward"`
+		TTLSeconds        int64    `json:"ttl_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	isl, err := d.store.GetIsland(req.LocalIslandID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "local island not found")
+		return
+	}
+	ag, err := federation.CreateAgreement(isl, req.RemoteIslandID, req.SharedServices, req.AllowedIdentities, req.AllowBulletinSync, req.AllowDTNForward, time.Duration(req.TTLSeconds)*time.Second)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := d.store.SaveFederation(ag); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, ag)
+}
+
+func (d *Daemon) handleFederationImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var ag federation.Agreement
+	if err := json.NewDecoder(r.Body).Decode(&ag); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := federation.VerifyAgreement(&ag, time.Now()); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := d.store.SaveFederation(&ag); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ag)
+}
+
+func (d *Daemon) handleFederationRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		AgreementID string `json:"agreement_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AgreementID == "" {
+		writeErr(w, http.StatusBadRequest, "agreement_id is required")
+		return
+	}
+	if err := d.store.RevokeFederation(req.AgreementID); err != nil {
+		writeErr(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked", "agreement_id": req.AgreementID})
 }

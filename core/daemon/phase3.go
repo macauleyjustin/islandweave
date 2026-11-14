@@ -216,6 +216,15 @@ func (d *Daemon) processIncomingBundle(b *dtn.Bundle, link *transport.Link) (out
 	if err := d.store.SaveDTNBundle(bundleToRecord(b, "carrying", d.id.ID)); err != nil {
 		return "error", err
 	}
+	// If the destination is currently connected to this relay/courier, forward immediately!
+	d.mu.RLock()
+	destLink := d.links[b.DestinationID]
+	d.mu.RUnlock()
+	if destLink != nil {
+		if fwdEnv, err := iwtp.MakeEnvelope(d.id.ID, dtn.TypeBundle, b); err == nil {
+			_ = destLink.SendEnvelope(fwdEnv)
+		}
+	}
 	if link != nil {
 		cAck, _ := iwtp.MakeEnvelope(d.id.ID, dtn.TypeCustodyAck, dtn.CustodyAckPayload{
 			BundleID:      b.BundleID,

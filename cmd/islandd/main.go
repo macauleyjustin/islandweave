@@ -12,6 +12,7 @@ import (
 
 	"github.com/islandweave/islandweave/core/beacon"
 	"github.com/islandweave/islandweave/core/daemon"
+	"github.com/islandweave/islandweave/transports/tor"
 )
 
 func defaultDataDir() string {
@@ -29,6 +30,10 @@ func main() {
 	controlAddr := flag.String("control", "127.0.0.1:47471", "Local authenticated control API address")
 	gatewayAddr := flag.String("gateway", "127.0.0.1:47475", "Local HTTP browser gateway address")
 	multicastAddr := flag.String("multicast", beacon.DefaultMulticastAddr, "UDP multicast discovery address")
+	relayMode := flag.Bool("relay", false, "Enable headless VPS encrypted relay mode")
+	torPolicy := flag.String("tor-policy", "direct-first", "Tor policy: direct-first, tor-preferred, tor-only")
+	torSocks := flag.String("tor-socks", "", "Tor SOCKS5 proxy address (e.g. 127.0.0.1:9050)")
+	onionSvc := flag.String("onion-service", "", "Configured .onion:port service address")
 	flag.Parse()
 
 	d, err := daemon.New(daemon.Config{
@@ -38,6 +43,12 @@ func main() {
 		ControlAddr:   *controlAddr,
 		GatewayAddr:   *gatewayAddr,
 		MulticastAddr: *multicastAddr,
+		RelayEnabled:  *relayMode,
+		Tor: tor.Config{
+			Policy:       tor.Policy(*torPolicy),
+			SocksAddr:    *torSocks,
+			OnionService: *onionSvc,
+		},
 	})
 	if err != nil {
 		log.Fatalf("failed to initialize islandd: %v", err)

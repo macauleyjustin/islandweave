@@ -1,6 +1,6 @@
 # IslandWeave Implementation Status
 
-**Current Milestone:** Phase 4 — Decentralized Mail (`IWMP`) & Community Bulletins (`IWBN`)
+**Current Milestone:** Phase 5 — Remote Infrastructure (VPS Relay, Tor Transport & Island Federation)
 
 | Subsystem / Module | Status | Notes |
 |---|---|---|
@@ -19,7 +19,9 @@
 | `IWP-DTN` Store-and-Forward & Courier (`protocols/dtn`) | Implemented and tested | E2E X25519+ChaCha20-Poly1305 encrypted bundles, hop limits, expiration, duplicate suppression, storage quotas, custody/delivery acks, physical `.iwcourier` export/import. |
 | `IWMP` Mail (`protocols/iwmp`) | Implemented and tested | E2E encrypted offline mail over `IWP-DTN`, inbox/outbox/drafts/sent, attachments, search, Digital Post Office forwarding, delivery acks. |
 | `IWBN` Bulletins (`protocols/iwbn`) | Implemented and tested | Signed versioned bulletins, channel subscriptions, live & `.iwcourier` sync, verified official emergency publisher check. |
-| VPS Relay, Tor Transport & Federation | Designed but not implemented | Scheduled for Phase 5. |
+| VPS Relay (`--relay`) & Deployment (`packaging/`) | Implemented and tested | Headless relay forwards encrypted DTN bundles without plaintext access or Island admin keys; systemd & Docker configs added. |
+| Tor Transport (`transports/tor`) | Implemented and tested | Pure-Go SOCKS5 dialer with `direct-first`, `tor-preferred`, and strict fail-closed `tor-only` policy. |
+| Island Federation (`federation`) | Implemented and tested | Signed `IWP-FED-1` agreements with service allowlists, expiration, and revocation without merging memberships. |
 | IslandWeave Desktop & Navigator Browser | Designed but not implemented | Scheduled for Phase 6. |
 | `IWST` Satellite Simulator | Designed but not implemented | Scheduled for Phase 7. |
 | Wi-Fi SoftAP / BLE / Wi-Fi Direct | Blocked by hardware or platform limitations | Requires OS-specific privileged wireless adapters and hardware validation. |
