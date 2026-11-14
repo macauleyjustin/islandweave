@@ -1,0 +1,27 @@
+name: IslandWeave CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-and-build:
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+      - name: Run unit and integration tests
+        run: go test -v -race -count=1 -timeout 60s ./...
+      - name: Build binaries
+        run: |
+          go build ./cmd/islandd
+          go build ./cmd/island
+          go build ./apps/desktop
+          go build ./apps/navigator

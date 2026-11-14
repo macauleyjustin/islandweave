@@ -355,3 +355,21 @@ func recordToBundle(r *storage.DTNBundleRecord) *dtn.Bundle {
 		Signature:     r.Signature,
 	}
 }
+
+// ExportForwardableBundles returns all non-expired forwardable DTN bundles ordered by priority.
+func (d *Daemon) ExportForwardableBundles() ([]dtn.Bundle, error) {
+	list, err := d.store.ListForwardableDTNBundles(time.Now().Unix())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]dtn.Bundle, 0, len(list))
+	for _, r := range list {
+		out = append(out, *recordToBundle(r))
+	}
+	return out, nil
+}
+
+// IngestExternalBundle verifies, deduplicates, and delivers/stores a bundle arriving from an external transport (e.g. IWST satellite).
+func (d *Daemon) IngestExternalBundle(b *dtn.Bundle) (string, error) {
+	return d.processIncomingBundle(b, nil)
+}

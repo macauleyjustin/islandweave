@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>IslandWeave Control Center</title>
+<style>
+  :root { --bg:#0f172a; --panel:#1e293b; --border:#334155; --text:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); display:flex; min-height:100vh; }
+  aside { width:240px; background:#0b1120; border-right:1px solid var(--border); padding:1rem; display:flex; flex-direction:column; gap:.25rem; }
+  aside h1 { font-size:1.1rem; margin:0 0 .75rem; color:var(--accent); }
+  nav button { width:100%; text-align:left; background:none; border:none; color:var(--muted); padding:.55rem .75rem; border-radius:6px; cursor:pointer; font-size:.9rem; }
+  nav button:hover, nav button.active { background:var(--panel); color:var(--text); }
+  main { flex:1; padding:1.5rem; overflow:auto; max-width:1100px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:1rem 1.25rem; margin-bottom:1rem; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; }
+  .stat { font-size:1.4rem; font-weight:700; margin-top:.25rem; }
+  .badge { display:inline-block; padding:.15rem .5rem; border-radius:999px; font-size:.75rem; font-weight:600; background:var(--border); }
+  .badge.ok { background:#14532d; color:#86efac; }
+  .badge.warn { background:#78350f; color:#fde68a; }
+  input, select, textarea { background:#0f172a; color:var(--text); border:1px solid var(--border); border-radius:6px; padding:.5rem .65rem; width:100%; margin:.25rem 0 .6rem; font-family:inherit; }
+  button.btn { background:var(--accent); color:#0b1120; border:none; border-radius:6px; padding:.5rem .9rem; font-weight:600; cursor:pointer; }
+  button.btn.sec { background:var(--border); color:var(--text); }
+  table { width:100%; border-collapse:collapse; font-size:.88rem; }
+  th, td { text-align:left; padding:.5rem; border-bottom:1px solid var(--border); }
+  pre { background:#0b1120; padding:.75rem; border-radius:6px; overflow:auto; font-size:.8rem; }
+  section { display:none; }
+  section.active { display:block; }
+</style>
+</head>
+<body>
+<aside>
+  <h1>IslandWeave</h1>
+  <div id="conn-badge" class="badge warn">Checking daemon...</div>
+  <nav style="margin-top:.75rem">
+    <button class="active" onclick="showTab('dashboard',this)">Dashboard</button>
+    <button onclick="showTab('islands',this)">Islands &amp; Invites</button>
+    <button onclick="showTab('peers',this)">Peers &amp; Discovery</button>
+    <button onclick="showTab('beacon',this)">Beacon Mode</button>
+    <button onclick="showTab('chat',this)">Chat &amp; Messaging</button>
+    <button onclick="showTab('mail',this)">Mail (IWMP)</button>
+    <button onclick="showTab('bulletins',this)">Bulletins (IWBN)</button>
+    <button onclick="showTab('files',this)">Files &amp; Transfers</button>
+    <button onclick="showTab('sites',this)">Websites &amp; Services</button>
+    <button onclick="showTab('courier',this)">Courier &amp; DTN</button>
+    <button onclick="showTab('infra',this)">Relay, Tor &amp; Satellite</button>
+  </nav>
+</aside>
+<main>
+  <section id="dashboard" class="active">
+    <h2>Network Dashboard</h2>
+    <div class="grid" id="dash-stats"></div>
+    <div class="card"><h3>Node Identity &amp; Endpoints</h3><pre id="dash-raw"></pre></div>
+  </section>
+
+  <section id="islands">
+    <h2>Islands &amp; Memberships</h2>
+    <div class="card">
+      <h3>Create Island</h3>
+      <input id="isl-name" placeholder="Island Name (e.g. Harbor Net)">
+      <select id="isl-vis"><option value="invite-only">invite-only</option><option value="public">public</option><option value="private">private</option></select>
+      <button class="btn" onclick="createIsland()">Create Island</button>
+    </div>
+    <div class="card">
+      <h3>Join Island via Invite Token</h3>
+      <input id="isl-token" placeholder="Paste base64url invite token">
+      <button class="btn" onclick="joinIsland()">Join Island</button>
+    </div>
+    <div class="card"><h3>Joined Islands</h3><div id="isl-list"></div></div>
+  </section>
+
+  <section id="peers">
+    <h2>Peers &amp; Nearby Discovery</h2>
+    <div class="card">
+      <h3>Connect to Peer</h3>
+      <input id="peer-addr" placeholder="host:port (e.g. 192.168.1.20:47472)">
+      <button class="btn" onclick="connectPeer()">Connect</button>
+    </div>
+    <div class="card"><h3>Nearby Beacon-Discovered Peers</h3><div id="discover-list"></div></div>
+    <div class="card"><h3>Known &amp; Connected Peers</h3><div id="peers-list"></div></div>
+  </section>
+
+  <section id="beacon">
+    <h2>Beacon Mode</h2>
+    <div class="card">
+      <select id="bcn-mode"><option value="silent">silent (off)</option><option value="restricted">restricted</option><option value="public">public</option></select>
+      <input id="bcn-isl" placeholder="Optional Island ID to advertise">
+      <button class="btn" onclick="setBeacon()">Apply Beacon Mode</button>
+      <pre id="bcn-status" style="margin-top:.75rem"></pre>
+    </div>
+  </section>
+
+  <section id="chat">
+    <h2>Chat &amp; Messaging</h2>
+    <div class="card">
+      <input id="msg-to" placeholder="Recipient Node ID (iw:node:...)">
+      <input id="msg-body" placeholder="Message">
+      <button class="btn" onclick="sendMsg()">Send Encrypted Message</button>
+    </div>
+    <div class="card"><h3>Message History</h3><div id="msg-list"></div></div>
+  </section>
+
+  <section id="mail">
+    <h2>IslandWeave Mail (IWMP)</h2>
+    <div class="card">
+      <h3>Compose Offline / Encrypted Mail</h3>
+      <input id="mail-to" placeholder="Recipient Node ID (iw:node:...)">
+      <input id="mail-subj" placeholder="Subject">
+      <textarea id="mail-body" rows="3" placeholder="Message body"></textarea>
+      <button class="btn" onclick="sendMail(false)">Send Mail</button>
+      <button class="btn sec" onclick="sendMail(true)">Save Draft</button>
+    </div>
+    <div class="card">
+      <h3>Mailbox</h3>
+      <div style="margin-bottom:.5rem">
+        <button class="btn sec" onclick="loadMail('inbox')">Inbox</button>
+        <button class="btn sec" onclick="loadMail('outbox')">Outbox</button>
+        <button class="btn sec" onclick="loadMail('drafts')">Drafts</button>
+        <button class="btn sec" onclick="loadMail('sent')">Sent</button>
+      </div>
+      <div id="mail-list"></div>
+    </div>
+  </section>
+
+  <section id="bulletins">
+    <h2>Community Bulletins (IWBN)</h2>
+    <div class="card">
+      <input id="bul-ch" placeholder="Channel (e.g. community-news)" value="community-news">
+      <input id="bul-title" placeholder="Title">
+      <textarea id="bul-body" rows="3" placeholder="Bulletin text"></textarea>
+      <button class="btn" onclick="pubBulletin()">Publish Signed Bulletin</button>
+    </div>
+    <div class="card"><h3>Published &amp; Synced Bulletins</h3><div id="bul-list"></div></div>
+  </section>
+
+  <section id="files">
+    <h2>File Transfers (IWTP)</h2>
+    <div class="card">
+      <input id="tr-to" placeholder="Recipient Node ID (iw:node:...)">
+      <input id="tr-path" placeholder="Absolute local file path">
+      <button class="btn" onclick="sendFile()">Send File</button>
+    </div>
+    <div class="card"><h3>Transfers</h3><div id="tr-list"></div></div>
+  </section>
+
+  <section id="sites">
+    <h2>Websites &amp; Services</h2>
+    <div class="card">
+      <h3>Host Static Website</h3>
+      <input id="site-dir" placeholder="Absolute path to website directory">
+      <input id="site-name" placeholder="Site alias (e.g. harbor-news)">
+      <button class="btn" onclick="hostSite()">Publish Website</button>
+    </div>
+    <div class="card"><h3>Hosted &amp; Cached Services</h3><div id="svc-list"></div></div>
+  </section>
+
+  <section id="courier">
+    <h2>Courier &amp; DTN Store-and-Forward</h2>
+    <div class="card">
+      <pre id="dtn-status"></pre>
+      <input id="dtn-pack" placeholder="Path to .iwcourier file">
+      <button class="btn" onclick="exportCourier()">Export Pack</button>
+      <button class="btn sec" onclick="importCourier()">Import Pack</button>
+    </div>
+    <div class="card"><h3>DTN Bundle Queue</h3><div id="dtn-queue"></div></div>
+  </section>
+
+  <section id="infra">
+    <h2>Relay, Tor, Federation &amp; Satellite</h2>
+    <div class="card">
+      <h3>VPS Relay Mode</h3>
+      <button class="btn" onclick="setRelay(true)">Enable Relay</button>
+      <button class="btn sec" onclick="setRelay(false)">Disable Relay</button>
+    </div>
+    <div class="card">
+      <h3>Tor Transport Policy</h3>
+      <select id="tor-pol"><option value="direct-first">direct-first</option><option value="tor-preferred">tor-preferred</option><option value="tor-only">tor-only</option></select>
+      <input id="tor-socks" placeholder="SOCKS5 proxy (e.g. 127.0.0.1:9050)">
+      <button class="btn" onclick="setTor()">Save Tor Policy</button>
+      <pre id="tor-status" style="margin-top:.5rem"></pre>
+    </div>
+    <div class="card">
+      <h3>Satellite Transport (IWST)</h3>
+      <pre id="sat-status"></pre>
+    </div>
+  </section>
+</main>
+
+<script>
+let currentMailFolder = 'inbox';
+async function api(path, method='GET', body=null) {
+  const opts = { method, headers: {} };
+  if (body !== null) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch('/api' + path, opts);
+  const txt = await r.text();
+  try { return { ok: r.ok, data: JSON.parse(txt) }; } catch { return { ok: r.ok, data: txt }; }
+}
+function showTab(id, btn) {
+  document.querySelectorAll('main section').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  refreshAll();
+}
+async function refreshAll() {
+  const st = await api('/v1/status');
+  const badge = document.getElementById('conn-badge');
+  if (!st.ok) { badge.textContent = 'Daemon Offline'; badge.className = 'badge warn'; return; }
+  const d = st.data;
+  badge.textContent = d.active_links > 0 ? `Online (${d.active_links} peers)` : 'Local Ready (Offline)';
+  badge.className = 'badge ok';
+  document.getElementById('dash-stats').innerHTML = `
+    <div class="card"><div>Node Name</div><div class="stat">${d.node_name}</div></div>
+    <div class="card"><div>Islands</div><div class="stat">${d.islands}</div></div>
+    <div class="card"><div>Active Links</div><div class="stat">${d.active_links}</div></div>
+    <div class="card"><div>Beacon</div><div class="stat">${d.beacon.mode}</div></div>`;
+  document.getElementById('dash-raw').textContent = JSON.stringify(d, null, 2);
+  document.getElementById('bcn-status').textContent = JSON.stringify(d.beacon, null, 2);
+
+  const isls = await api('/v1/islands');
+  document.getElementById('isl-list').innerHTML = (isls.data||[]).map(i => `<div><b>${i.name}</b> <code>${i.id}</code> (${i.role}) <button class="btn sec" onclick="inviteIsland('${i.id}')">Invite</button></div>`).join('') || 'None';
+
+  const disc = await api('/v1/discover');
+  document.getElementById('discover-list').innerHTML = (disc.data||[]).map(p => `<div>${p.announcement.node_name} <code>${p.dial_addr}</code> <button class="btn sec" onclick="quickConnect('${p.dial_addr}')">Connect</button></div>`).join('') || 'No nearby beacons';
+
+  const peers = await api('/v1/peers');
+  document.getElementById('peers-list').innerHTML = (peers.data||[]).map(p => `<div><b>${p.name||p.node_id}</b> <code>${p.node_id}</code> [${p.connected?'connected':'offline'}] ${p.revoked?'<span class="badge">revoked</span>':''}</div>`).join('') || 'No peers yet';
+
+  const msgs = await api('/v1/messages');
+  document.getElementById('msg-list').innerHTML = (msgs.data||[]).map(m => `<div>[${m.direction}/${m.status}] <b>${m.sender_id.slice(0,18)}</b>: ${m.body}</div>`).join('') || 'No messages';
+
+  loadMail(currentMailFolder);
+
+  const bul = await api('/v1/bulletins');
+  document.getElementById('bul-list').innerHTML = (bul.data||[]).map(b => `<div class="card"><b>[${b.channel}] ${b.title}</b><div>${b.body}</div><small>${b.publisher_id}</small></div>`).join('') || 'No bulletins';
+
+  const trs = await api('/v1/transfers');
+  document.getElementById('tr-list').innerHTML = (trs.data||[]).map(t => `<div><b>${t.file_name}</b> (${t.direction}) — ${t.status} (${t.received_count}/${(t.chunks||[]).length} chunks)</div>`).join('') || 'No transfers';
+
+  const svcs = await api('/v1/services');
+  document.getElementById('svc-list').innerHTML = (svcs.data||[]).map(s => `<div><b>${s.name}</b> <code>${s.service_id}</code> <a style="color:var(--accent)" target="_blank" href="http://${d.gateway_addr}/site/${s.name}/">Open via Gateway</a></div>`).join('') || 'No services';
+
+  const dtnSt = await api('/v1/courier/status');
+  document.getElementById('dtn-status').textContent = JSON.stringify(dtnSt.data, null, 2);
+  const dtnQ = await api('/v1/courier/queue');
+  document.getElementById('dtn-queue').innerHTML = (dtnQ.data||[]).map(b => `<div><code>${b.bundle_id.slice(0,8)}</code> [${b.state}] ${b.kind} -> ${b.destination_id} (hops ${b.hop_count}/${b.max_hops})</div>`).join('') || 'Queue empty';
+
+  const torSt = await api('/v1/tor/status');
+  document.getElementById('tor-status').textContent = JSON.stringify(torSt.data, null, 2);
+  const satSt = await api('/v1/satellite/status');
+  if (satSt.ok) document.getElementById('sat-status').textContent = JSON.stringify(satSt.data, null, 2);
+}
+async function createIsland(){ await api('/v1/islands','POST',{name:document.getElementById('isl-name').value,visibility:document.getElementById('isl-vis').value}); refreshAll(); }
+async function inviteIsland(id){ const r=await api('/v1/islands/invite','POST',{island_id:id}); prompt('Copy Island Invite Token:', r.data.token); }
+async function joinIsland(){ await api('/v1/islands/join','POST',{token:document.getElementById('isl-token').value}); refreshAll(); }
+async function connectPeer(){ await api('/v1/peers/connect','POST',{addr:document.getElementById('peer-addr').value}); refreshAll(); }
+async function quickConnect(a){ await api('/v1/peers/connect','POST',{addr:a}); refreshAll(); }
+async function setBeacon(){ await api('/v1/beacon','POST',{mode:document.getElementById('bcn-mode').value,island_id:document.getElementById('bcn-isl').value}); refreshAll(); }
+async function sendMsg(){ await api('/v1/messages/send','POST',{to:document.getElementById('msg-to').value,body:document.getElementById('msg-body').value}); refreshAll(); }
+async function sendMail(draft){ await api('/v1/mail/send','POST',{to:document.getElementById('mail-to').value,subject:document.getElementById('mail-subj').value,body:document.getElementById('mail-body').value,draft}); refreshAll(); }
+async function loadMail(f){ currentMailFolder=f; const r=await api('/v1/mail?folder='+f); document.getElementById('mail-list').innerHTML=(r.data||[]).map(m=>`<div><b>${m.subject||'(no subject)'}</b> — ${m.from_id.slice(0,18)} -> ${m.to_id.slice(0,18)} [${m.status}]<div>${m.body}</div></div>`).join('')||'Empty'; }
+async function pubBulletin(){ await api('/v1/bulletins/publish','POST',{channel:document.getElementById('bul-ch').value,title:document.getElementById('bul-title').value,body:document.getElementById('bul-body').value}); refreshAll(); }
+async function sendFile(){ await api('/v1/transfers/send','POST',{to:document.getElementById('tr-to').value,file_path:document.getElementById('tr-path').value}); refreshAll(); }
+async function hostSite(){ await api('/v1/services/host','POST',{dir:document.getElementById('site-dir').value,name:document.getElementById('site-name').value}); refreshAll(); }
+async function exportCourier(){ await api('/v1/courier/export','POST',{file_path:document.getElementById('dtn-pack').value}); refreshAll(); }
+async function importCourier(){ await api('/v1/courier/import','POST',{file_path:document.getElementById('dtn-pack').value}); refreshAll(); }
+async function setRelay(on){ await api('/v1/server/enable','POST',{relay_enabled:on}); refreshAll(); }
+async function setTor(){ await api('/v1/tor/config','POST',{policy:document.getElementById('tor-pol').value,socks_addr:document.getElementById('tor-socks').value}); refreshAll(); }
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>

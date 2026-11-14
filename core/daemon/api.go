@@ -53,6 +53,8 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/federation/create", d.handleFederationCreate)
 	mux.HandleFunc("/v1/federation/import", d.handleFederationImport)
 	mux.HandleFunc("/v1/federation/revoke", d.handleFederationRevoke)
+	mux.HandleFunc("/v1/satellite/status", d.handleSatelliteStatus)
+	mux.HandleFunc("/v1/satellite/passes", d.handleSatellitePasses)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -878,4 +880,37 @@ func (d *Daemon) handleFederationRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked", "agreement_id": req.AgreementID})
+}
+
+func (d *Daemon) handleSatelliteStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	fwd, _ := d.store.ListForwardableDTNBundles(time.Now().Unix())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mode":           "simulator-hal",
+		"hardware_ready": false,
+		"queued_bundles": len(fwd),
+		"note":           "Satellite Contact Simulator active; real RF transmission requires authorized ground-station hardware.",
+	})
+}
+
+func (d *Daemon) handleSatellitePasses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	now := time.Now()
+	passes := []map[string]any{
+		{
+			"pass_id":        "sim-pass-1",
+			"satellite_name": "IW-SIM-LEO-1",
+			"start_time":     now.Add(15 * time.Minute).Unix(),
+			"end_time":       now.Add(23 * time.Minute).Unix(),
+			"bandwidth_bps":  9600,
+			"max_bytes":      576000,
+		},
+	}
+	writeJSON(w, http.StatusOK, passes)
 }

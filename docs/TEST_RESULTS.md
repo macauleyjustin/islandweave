@@ -1,32 +1,28 @@
 # IslandWeave Test Results
 
-## Automated Test Suite (`go test -v -race -count=1 -timeout 30s ./...`)
+## Automated Test Suite (`go test -v -race -count=1 -timeout 60s ./...`)
 
-Executed on `darwin/arm64` (Go 1.27.4) after final Phase 2 edits:
+Executed on `darwin/arm64` (Go 1.27.4) after final Phases 0–8 edits:
 
 | Package | Test | Result | Duration |
 |---|---|---|---|
-| `core/identity` | `TestIdentitySaveLoadAndSign` | PASS | 0.01s |
-| `core/islands` | `TestIslandCreateInviteAndVerify` | PASS | 0.01s |
-| `core/objects` | `TestObjectStoreIngestVerifyAndAssemble` | PASS | 0.01s |
+| `apps/desktop` | `TestDesktopUIServesIndex` | PASS | 0.01s |
+| `apps/navigator` | `TestResolveIslandURIAndUI` | PASS | 0.01s |
+| `core/identity` | `TestIdentitySaveLoadAndSign` | PASS | 0.04s |
+| `core/islands` | `TestIslandCreateInviteAndVerify` | PASS | 0.02s |
+| `core/objects` | `TestObjectStoreIngestVerifyAndAssemble` | PASS | 0.05s |
 | `core/transport` | `TestLinkHandshakeAndEncryptedMessaging` | PASS | 0.02s |
-| `protocols/dtn` | `TestDTNBundleEncryptVerifyAndDecrypt` | PASS | 0.01s |
-| `tests` | `TestPhase1TwoNodesDiscoverConnectMessageAndRevoke` | PASS | 0.45s |
-| `tests` | `TestPhase2FileTransferIWTP` | PASS | 0.39s |
-| `tests` | `TestPhase2StaticWebsiteHostingAndOfflineCache` | PASS | 0.09s |
-| `tests` | `TestPhase2TransferResumeAfterReconnect` | PASS | 0.39s |
-| `tests` | `TestPhase3CourierRelayNeverSimultaneouslyOnline` | PASS | 0.33s |
-| `tests` | `TestPhase3PhysicalCourierExportImportAndQuota` | PASS | 0.11s |
-| `tests` | `TestPhase4MailAndBulletinThroughCourier` | PASS | 0.44s |
-| `tests` | `TestPhase5VPSRelayWithoutPlaintextAccess` | PASS | 0.22s |
-| `tests` | `TestPhase5TorOnlyPolicyNeverFallsBackToDirect` | PASS | 0.06s |
-| `tests` | `TestPhase5IslandFederation` | PASS | 0.03s |
+| `protocols/dtn` | `TestDTNBundleEncryptVerifyAndDecrypt` | PASS | 0.02s |
+| `tests` | `TestPhase1TwoNodesDiscoverConnectMessageAndRevoke` | PASS | 0.36s |
+| `tests` | `TestPhase2FileTransferIWTP` | PASS | 0.40s |
+| `tests` | `TestPhase2StaticWebsiteHostingAndOfflineCache` | PASS | 0.12s |
+| `tests` | `TestPhase2TransferResumeAfterReconnect` | PASS | 0.76s |
+| `tests` | `TestPhase3CourierRelayNeverSimultaneouslyOnline` | PASS | 0.35s |
+| `tests` | `TestPhase3PhysicalCourierExportImportAndQuota` | PASS | 0.13s |
+| `tests` | `TestPhase4MailAndBulletinThroughCourier` | PASS | 0.47s |
+| `tests` | `TestPhase5VPSRelayWithoutPlaintextAccess` | PASS | 0.30s |
+| `tests` | `TestPhase5TorOnlyPolicyNeverFallsBackToDirect` | PASS | 0.10s |
+| `tests` | `TestPhase5IslandFederation` | PASS | 0.05s |
+| `tests` | `TestPhase7SatelliteContactSimulatorInterruptAndResume` | PASS | 0.10s |
 
-### Verified Scenarios
-1. **Unauthenticated Control API rejection:** `GET /v1/status` without bearer token returns `401 Unauthorized`.
-2. **Offline LAN discovery & encrypted messaging:** Two `islandd` nodes discover via UDP multicast Beacon, authenticate via `IWP-LINK/1`, exchange encrypted messages, and receive `chat.ack`.
-3. **Peer revocation:** Revoking a peer closes the active link and rejects subsequent handshake attempts.
-4. **IWTP chunked file transfer & verification:** 650 KiB multi-chunk file transfers over `IWP-LINK/1`, verifies every SHA-256 chunk, and reassembles byte-for-byte.
-5. **IWTP reconnect & resume:** Connection drop/reconnect mid-transfer triggers `resumePendingTransfers` and completes with exact SHA-256 match.
-6. **Static website hosting, gateway isolation, and offline replica:** Node A hosts a multi-file static site; Node B fetches and serves it via `apps/gateway`; gateway returns `404` on `/v1/status` (no privileged daemon access); after Node A stops, Node B's gateway continues serving the cached site offline.
-7. **Cross-compilation:** `go build ./cmd/islandd ./cmd/island` succeeds for `darwin/arm64`, `linux/amd64`, `linux/arm64`, and `windows/amd64`.
+All 18 tests across 8 test packages passed with `-race -count=1`. Cross-compilation succeeded for `linux/amd64`, `linux/arm64`, and `windows/amd64`.

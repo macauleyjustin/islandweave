@@ -549,6 +549,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown federation subcommand: %s\n", rest[0])
 			os.Exit(1)
 		}
+	case "satellite":
+		if len(rest) < 1 || (rest[0] != "status" && rest[0] != "passes") {
+			fmt.Fprintln(os.Stderr, "usage: island satellite <status|passes>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/satellite/"+rest[0], nil)
+		fatalIf(err)
+		printResp(out, code)
 	default:
 		printUsage()
 		os.Exit(1)
