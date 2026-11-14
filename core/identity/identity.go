@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"crypto/ecdh"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -19,21 +20,25 @@ const (
 	IslandIDPrefix = "iw:island:"
 )
 
-// NodeIdentity holds a node's cryptographic Ed25519 identity and display name.
+// NodeIdentity holds a node's cryptographic Ed25519 signing identity and X25519 encryption keypair.
 type NodeIdentity struct {
-	ID         string             `json:"id"`
-	Name       string             `json:"name"`
-	PublicKey  ed25519.PublicKey  `json:"public_key"`
-	PrivateKey ed25519.PrivateKey `json:"private_key"`
-	CreatedAt  int64              `json:"created_at"`
+	ID            string             `json:"id"`
+	Name          string             `json:"name"`
+	PublicKey     ed25519.PublicKey  `json:"public_key"`
+	PrivateKey    ed25519.PrivateKey `json:"private_key"`
+	EncPublicKey  []byte             `json:"enc_public_key"`
+	EncPrivateKey []byte             `json:"enc_private_key"`
+	CreatedAt     int64              `json:"created_at"`
 }
 
 type persistedIdentity struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	PublicKey  string `json:"public_key"`
-	PrivateKey string `json:"private_key"`
-	CreatedAt  int64  `json:"created_at"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	PublicKey     string `json:"public_key"`
+	PrivateKey    string `json:"private_key"`
+	EncPublicKey  string `json:"enc_public_key,omitempty"`
+	EncPrivateKey string `json:"enc_private_key,omitempty"`
+	CreatedAt     int64  `json:"created_at"`
 }
 
 // DeriveNodeID computes the canonical iw:node:<hex16> identifier from an Ed25519 public key.
@@ -48,7 +53,7 @@ func DeriveIslandID(pub ed25519.PublicKey) string {
 	return IslandIDPrefix + hex.EncodeToString(sum[:16])
 }
 
-// GenerateNodeIdentity creates a fresh Ed25519 node identity.
+// GenerateNodeIdentity creates a fresh Ed25519 + X25519 node identity.
 func GenerateNodeIdentity(name string) (*NodeIdentity, error) {
 	if name == "" {
 		hostname, err := os.Hostname()
@@ -62,12 +67,18 @@ func GenerateNodeIdentity(name string) (*NodeIdentity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate ed25519 key: %w", err)
 	}
+	encPriv, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("generate x25519 key: %w", err)
+	}
 	return &NodeIdentity{
-		ID:         DeriveNodeID(pub),
-		Name:       name,
-		PublicKey:  pub,
-		PrivateKey: priv,
-		CreatedAt:  time.Now().Unix(),
+		ID:            DeriveNodeID(pub),
+		Name:          name,
+		PublicKey:     pub,
+		PrivateKey:    priv,
+		EncPublicKey:  encPriv.PublicKey().Bytes(),
+		EncPrivateKey: encPriv.Bytes(),
+		CreatedAt:     time.Now().Unix(),
 	}, nil
 }
 
@@ -78,11 +89,13 @@ func SaveNodeIdentity(dataDir string, id *NodeIdentity) error {
 		return fmt.Errorf("create keys dir: %w", err)
 	}
 	p := persistedIdentity{
-		ID:         id.ID,
-		Name:       id.Name,
-		PublicKey:  base64.StdEncoding.EncodeToString(id.PublicKey),
-		PrivateKey: base64.StdEncoding.EncodeToString(id.PrivateKey),
-		CreatedAt:  id.CreatedAt,
+		ID:            id.ID,
+		Name:          id.Name,
+		PublicKey:     base64.StdEncoding.EncodeToString(id.PublicKey),
+		PrivateKey:    base64.StdEncoding.EncodeToString(id.PrivateKey),
+		EncPublicKey:  base64.StdEncoding.EncodeToString(id.EncPublicKey),
+		EncPrivateKey: base64.StdEncoding.EncodeToString(id.EncPrivateKey),
+		CreatedAt:     id.CreatedAt,
 	}
 	raw, err := json.MarshalIndent(p, "", "  ")
 	if err != nil {
@@ -120,13 +133,34 @@ func LoadNodeIdentity(dataDir string) (*NodeIdentity, error) {
 	if DeriveNodeID(pub) != p.ID {
 		return nil, errors.New("node id does not match public key")
 	}
-	return &NodeIdentity{
-		ID:         p.ID,
-		Name:       p.Name,
-		PublicKey:  ed25519.PublicKey(pub),
-		PrivateKey: ed25519.PrivateKey(priv),
-		CreatedAt:  p.CreatedAt,
-	}, nil
+	var encPub, encPriv []byte
+	needSave := false
+	if p.EncPublicKey != "" && p.EncPrivateKey != "" {
+		encPub, _ = base64.StdEncoding.DecodeString(p.EncPublicKey)
+		encPriv, _ = base64.StdEncoding.DecodeString(p.EncPrivateKey)
+	}
+	if len(encPub) != 32 || len(encPriv) != 32 {
+		ek, err := ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("generate x25519 key: %w", err)
+		}
+		encPub = ek.PublicKey().Bytes()
+		encPriv = ek.Bytes()
+		needSave = true
+	}
+	id := &NodeIdentity{
+		ID:            p.ID,
+		Name:          p.Name,
+		PublicKey:     ed25519.PublicKey(pub),
+		PrivateKey:    ed25519.PrivateKey(priv),
+		EncPublicKey:  encPub,
+		EncPrivateKey: encPriv,
+		CreatedAt:     p.CreatedAt,
+	}
+	if needSave {
+		_ = SaveNodeIdentity(dataDir, id)
+	}
+	return id, nil
 }
 
 // LoadOrCreateNodeIdentity loads the node identity if present, or creates and saves a new one.

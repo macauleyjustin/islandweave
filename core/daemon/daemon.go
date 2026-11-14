@@ -30,13 +30,15 @@ import (
 
 // Config configures an islandd instance.
 type Config struct {
-	DataDir       string
-	NodeName      string
-	ListenAddr    string // P2P TCP address, e.g. "0.0.0.0:47472" or "127.0.0.1:0"
-	ControlAddr   string // Local control API address, e.g. "127.0.0.1:47471"
-	GatewayAddr   string // Local browser gateway address, e.g. "127.0.0.1:47475"
-	MulticastAddr string // UDP multicast address, default "239.255.73.87:47470"
-	DisableBeacon bool   // Optional flag for isolated unit tests
+	DataDir                  string
+	NodeName                 string
+	ListenAddr               string // P2P TCP address, e.g. "0.0.0.0:47472" or "127.0.0.1:0"
+	ControlAddr              string // Local control API address, e.g. "127.0.0.1:47471"
+	GatewayAddr              string // Local browser gateway address, e.g. "127.0.0.1:47475"
+	MulticastAddr            string // UDP multicast address, default "239.255.73.87:47470"
+	DisableBeacon            bool   // Optional flag for isolated unit tests
+	DisableCourierForwarding bool   // Disable intermediate DTN bundle forwarding
+	MaxCourierBytes          int64  // Courier storage quota in bytes (default 64 MiB)
 }
 
 // Daemon is the core IslandWeave networking engine (islandd).
@@ -311,12 +313,13 @@ func (d *Daemon) ConnectPeer(ctx context.Context, addr string) (*transport.Link,
 
 func (d *Daemon) registerAndServeLink(ctx context.Context, link *transport.Link, source string) {
 	_ = d.store.UpsertPeer(&storage.PeerRecord{
-		NodeID:    link.PeerID(),
-		PublicKey: link.PeerPub(),
-		Addrs:     []string{link.RemoteAddr().String()},
-		Islands:   link.SharedIslands(),
-		LastSeen:  time.Now().Unix(),
-		Source:    source,
+		NodeID:       link.PeerID(),
+		PublicKey:    link.PeerPub(),
+		EncPublicKey: link.PeerEncPub(),
+		Addrs:        []string{link.RemoteAddr().String()},
+		Islands:      link.SharedIslands(),
+		LastSeen:     time.Now().Unix(),
+		Source:       source,
 	})
 
 	d.mu.Lock()
@@ -328,6 +331,7 @@ func (d *Daemon) registerAndServeLink(ctx context.Context, link *transport.Link,
 
 	go d.readLinkLoop(d.runCtx, link)
 	go d.resumePendingTransfers(link)
+	go d.syncDTNBundles(link)
 }
 
 func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
@@ -391,7 +395,9 @@ func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
 				Payload:   env.Payload,
 			})
 		default:
-			d.handlePhase2Envelope(link, env)
+			if !d.handleDTNEnvelope(link, env) {
+				d.handlePhase2Envelope(link, env)
+			}
 		}
 	}
 }

@@ -9,11 +9,14 @@ Executed on `darwin/arm64` (Go 1.27.4) after final Phase 2 edits:
 | `core/identity` | `TestIdentitySaveLoadAndSign` | PASS | 0.01s |
 | `core/islands` | `TestIslandCreateInviteAndVerify` | PASS | 0.01s |
 | `core/objects` | `TestObjectStoreIngestVerifyAndAssemble` | PASS | 0.01s |
-| `core/transport` | `TestLinkHandshakeAndEncryptedMessaging` | PASS | 0.01s |
-| `tests` | `TestPhase1TwoNodesDiscoverConnectMessageAndRevoke` | PASS | 0.28s |
-| `tests` | `TestPhase2FileTransferIWTP` | PASS | 0.37s |
-| `tests` | `TestPhase2StaticWebsiteHostingAndOfflineCache` | PASS | 0.06s |
-| `tests` | `TestPhase2TransferResumeAfterReconnect` | PASS | 0.38s |
+| `core/transport` | `TestLinkHandshakeAndEncryptedMessaging` | PASS | 0.02s |
+| `protocols/dtn` | `TestDTNBundleEncryptVerifyAndDecrypt` | PASS | 0.01s |
+| `tests` | `TestPhase1TwoNodesDiscoverConnectMessageAndRevoke` | PASS | 0.45s |
+| `tests` | `TestPhase2FileTransferIWTP` | PASS | 0.39s |
+| `tests` | `TestPhase2StaticWebsiteHostingAndOfflineCache` | PASS | 0.09s |
+| `tests` | `TestPhase2TransferResumeAfterReconnect` | PASS | 0.39s |
+| `tests` | `TestPhase3CourierRelayNeverSimultaneouslyOnline` | PASS | 0.32s |
+| `tests` | `TestPhase3PhysicalCourierExportImportAndQuota` | PASS | 0.08s |
 
 ### Verified Scenarios
 1. **Unauthenticated Control API rejection:** `GET /v1/status` without bearer token returns `401 Unauthorized`.

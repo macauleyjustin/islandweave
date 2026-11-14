@@ -375,6 +375,57 @@ func main() {
 		})
 		fatalIf(err)
 		printResp(out, code)
+	case "courier":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island courier <status|queue|send|export|import> [args]")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		switch rest[0] {
+		case "status":
+			out, code, err := c.do(http.MethodGet, "/v1/courier/status", nil)
+			fatalIf(err)
+			printResp(out, code)
+		case "queue":
+			out, code, err := c.do(http.MethodGet, "/v1/courier/queue", nil)
+			fatalIf(err)
+			printResp(out, code)
+		case "send":
+			if len(rest) < 3 {
+				fmt.Fprintln(os.Stderr, "usage: island courier send <node-id> <message>")
+				os.Exit(1)
+			}
+			out, code, err := c.do(http.MethodPost, "/v1/courier/send", map[string]any{
+				"to":   rest[1],
+				"body": strings.Join(rest[2:], " "),
+			})
+			fatalIf(err)
+			printResp(out, code)
+		case "export":
+			if len(rest) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: island courier export <file.iwcourier>")
+				os.Exit(1)
+			}
+			abs, err := filepath.Abs(rest[1])
+			fatalIf(err)
+			out, code, err := c.do(http.MethodPost, "/v1/courier/export", map[string]string{"file_path": abs})
+			fatalIf(err)
+			printResp(out, code)
+		case "import":
+			if len(rest) < 2 {
+				fmt.Fprintln(os.Stderr, "usage: island courier import <file.iwcourier>")
+				os.Exit(1)
+			}
+			abs, err := filepath.Abs(rest[1])
+			fatalIf(err)
+			out, code, err := c.do(http.MethodPost, "/v1/courier/import", map[string]string{"file_path": abs})
+			fatalIf(err)
+			printResp(out, code)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown courier subcommand: %s\n", rest[0])
+			os.Exit(1)
+		}
 	default:
 		printUsage()
 		os.Exit(1)
@@ -438,5 +489,6 @@ Commands:
   fetch <service-name-or-id>           Fetch and cache a peer's website locally
   send <file> --to <node-id>           Send a file via IWTP
   transfers                            List active and completed file transfers
-  cancel-transfer <transfer-id>        Cancel a file transfer`)
+  cancel-transfer <transfer-id>        Cancel a file transfer
+  courier status|queue|send|export|import  Manage delay-tolerant courier mode`)
 }

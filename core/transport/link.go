@@ -66,6 +66,7 @@ type clientHello struct {
 	Version      int      `json:"version"`
 	EphemeralPub string   `json:"ephemeral_pub"`
 	NodePub      string   `json:"node_pub"`
+	EncPub       string   `json:"enc_pub,omitempty"`
 	Nonce        string   `json:"nonce"`
 	Capabilities []string `json:"capabilities"`
 	IslandIDs    []string `json:"island_ids"`
@@ -75,6 +76,7 @@ type serverHelloBody struct {
 	Version      int      `json:"version"`
 	EphemeralPub string   `json:"ephemeral_pub"`
 	NodePub      string   `json:"node_pub"`
+	EncPub       string   `json:"enc_pub,omitempty"`
 	Nonce        string   `json:"nonce"`
 	Capabilities []string `json:"capabilities"`
 	IslandIDs    []string `json:"island_ids"`
@@ -94,6 +96,7 @@ type Link struct {
 	conn          net.Conn
 	peerID        string
 	peerPub       ed25519.PublicKey
+	peerEncPub    []byte
 	capabilities  []string
 	sharedIslands []string
 
@@ -108,6 +111,7 @@ type Link struct {
 
 func (l *Link) PeerID() string               { return l.peerID }
 func (l *Link) PeerPub() ed25519.PublicKey   { return l.peerPub }
+func (l *Link) PeerEncPub() []byte           { return append([]byte(nil), l.peerEncPub...) }
 func (l *Link) Capabilities() []string       { return append([]string(nil), l.capabilities...) }
 func (l *Link) SharedIslands() []string      { return append([]string(nil), l.sharedIslands...) }
 func (l *Link) RemoteAddr() net.Addr         { return l.conn.RemoteAddr() }
@@ -154,6 +158,7 @@ func HandshakeInitiator(conn net.Conn, cfg HandshakeConfig) (*Link, error) {
 		Version:      ProtocolVersion,
 		EphemeralPub: base64.StdEncoding.EncodeToString(ephPriv.PublicKey().Bytes()),
 		NodePub:      base64.StdEncoding.EncodeToString(cfg.Identity.PublicKey),
+		EncPub:       base64.StdEncoding.EncodeToString(cfg.Identity.EncPublicKey),
 		Nonce:        base64.StdEncoding.EncodeToString(cNonce),
 		Capabilities: caps,
 		IslandIDs:    cfg.IslandIDs,
@@ -242,10 +247,16 @@ func HandshakeInitiator(conn net.Conn, cfg HandshakeConfig) (*Link, error) {
 		return nil, err
 	}
 
+	var peerEncPub []byte
+	if sh.EncPub != "" {
+		peerEncPub, _ = base64.StdEncoding.DecodeString(sh.EncPub)
+	}
+
 	return &Link{
 		conn:          conn,
 		peerID:        peerID,
 		peerPub:       peerPub,
+		peerEncPub:    peerEncPub,
 		capabilities:  sh.Capabilities,
 		sharedIslands: sh.IslandIDs,
 		sendAEAD:      sendAEAD,
@@ -318,6 +329,7 @@ func HandshakeResponder(conn net.Conn, cfg HandshakeConfig) (*Link, error) {
 		Version:      ProtocolVersion,
 		EphemeralPub: base64.StdEncoding.EncodeToString(ephPriv.PublicKey().Bytes()),
 		NodePub:      base64.StdEncoding.EncodeToString(cfg.Identity.PublicKey),
+		EncPub:       base64.StdEncoding.EncodeToString(cfg.Identity.EncPublicKey),
 		Nonce:        base64.StdEncoding.EncodeToString(sNonce),
 		Capabilities: negCaps,
 		IslandIDs:    sharedIslands,
@@ -371,10 +383,16 @@ func HandshakeResponder(conn net.Conn, cfg HandshakeConfig) (*Link, error) {
 		return nil, err
 	}
 
+	var peerEncPub []byte
+	if ch.EncPub != "" {
+		peerEncPub, _ = base64.StdEncoding.DecodeString(ch.EncPub)
+	}
+
 	return &Link{
 		conn:          conn,
 		peerID:        peerID,
 		peerPub:       peerPub,
+		peerEncPub:    peerEncPub,
 		capabilities:  negCaps,
 		sharedIslands: sharedIslands,
 		sendAEAD:      sendAEAD,

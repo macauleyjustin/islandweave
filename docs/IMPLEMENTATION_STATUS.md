@@ -1,6 +1,6 @@
 # IslandWeave Implementation Status
 
-**Current Milestone:** Phase 2 — File Transfer (`IWTP`) & Static Website Hosting
+**Current Milestone:** Phase 3 — Delay-Tolerant Store-and-Forward (`IWP-DTN` & Physical Courier Mode)
 
 | Subsystem / Module | Status | Notes |
 |---|---|---|
@@ -16,7 +16,7 @@
 | `islandd` Core Daemon (`core/daemon`, `cmd/islandd`) | Implemented and tested | SQLite state store (`modernc.org/sqlite`), P2P TCP listener, authenticated Control API, Gateway server. |
 | `island` CLI (`cmd/island`) | Implemented and tested | Full Phase 1 & Phase 2 commands (`host`, `services`, `fetch`, `send`, `transfers`, `cancel-transfer`, etc.). |
 | Cross-Platform Compilation | Implemented but not fully tested | Builds cleanly for `darwin/arm64`, `linux/amd64`, `linux/arm64`, `windows/amd64`; runtime tested on `darwin/arm64` only. |
-| `IWP-DTN` Store-and-Forward & Courier | Designed but not implemented | Scheduled for Phase 3. |
+| `IWP-DTN` Store-and-Forward & Courier (`protocols/dtn`) | Implemented and tested | E2E X25519+ChaCha20-Poly1305 encrypted bundles, hop limits, expiration, duplicate suppression, storage quotas, custody/delivery acks, physical `.iwcourier` export/import. |
 | `IWMP` Mail & `IWBN` Bulletins | Designed but not implemented | Scheduled for Phase 4. |
 | VPS Relay, Tor Transport & Federation | Designed but not implemented | Scheduled for Phase 5. |
 | IslandWeave Desktop & Navigator Browser | Designed but not implemented | Scheduled for Phase 6. |

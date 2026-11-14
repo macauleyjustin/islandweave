@@ -17,15 +17,16 @@ import (
 
 // PeerRecord stores known peer metadata and authorization state.
 type PeerRecord struct {
-	NodeID    string   `json:"node_id"`
-	Name      string   `json:"name"`
-	PublicKey []byte   `json:"public_key"`
-	Addrs     []string `json:"addrs"`
-	Islands   []string `json:"islands"`
-	Trusted   bool     `json:"trusted"`
-	Revoked   bool     `json:"revoked"`
-	LastSeen  int64    `json:"last_seen"`
-	Source    string   `json:"source"` // "beacon", "manual", "invite", "inbound"
+	NodeID       string   `json:"node_id"`
+	Name         string   `json:"name"`
+	PublicKey    []byte   `json:"public_key"`
+	EncPublicKey []byte   `json:"enc_public_key,omitempty"`
+	Addrs        []string `json:"addrs"`
+	Islands      []string `json:"islands"`
+	Trusted      bool     `json:"trusted"`
+	Revoked      bool     `json:"revoked"`
+	LastSeen     int64    `json:"last_seen"`
+	Source       string   `json:"source"` // "beacon", "manual", "invite", "inbound"
 }
 
 // MessageRecord stores direct and Island chat messages.
@@ -83,6 +84,7 @@ func (s *Store) migrate() error {
 			node_id TEXT PRIMARY KEY,
 			name TEXT NOT NULL,
 			public_key BLOB NOT NULL,
+			enc_public_key BLOB,
 			addrs TEXT NOT NULL,
 			islands TEXT NOT NULL,
 			trusted INTEGER NOT NULL DEFAULT 0,
@@ -128,6 +130,30 @@ func (s *Store) migrate() error {
 			save_path TEXT NOT NULL,
 			error_msg TEXT NOT NULL,
 			updated_at INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS dtn_bundles (
+			bundle_id TEXT PRIMARY KEY,
+			source_id TEXT NOT NULL,
+			source_pub TEXT NOT NULL,
+			destination_id TEXT NOT NULL,
+			island_id TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			hop_count INTEGER NOT NULL DEFAULT 0,
+			max_hops INTEGER NOT NULL DEFAULT 8,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			ephemeral_pub TEXT NOT NULL,
+			ciphertext TEXT NOT NULL,
+			signature TEXT NOT NULL,
+			state TEXT NOT NULL,
+			custody_holder TEXT NOT NULL,
+			size_bytes INTEGER NOT NULL DEFAULT 0
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_dtn_state_prio ON dtn_bundles(state, priority DESC, created_at ASC);`,
+		`CREATE TABLE IF NOT EXISTS dtn_seen (
+			bundle_id TEXT PRIMARY KEY,
+			seen_at INTEGER NOT NULL
 		);`,
 	}
 	for _, stmt := range stmts {
@@ -219,15 +245,16 @@ func (s *Store) UpsertPeer(p *PeerRecord) error {
 		revokedInt = 1
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO peers (node_id, name, public_key, addrs, islands, trusted, revoked, last_seen, source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO peers (node_id, name, public_key, enc_public_key, addrs, islands, trusted, revoked, last_seen, source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(node_id) DO UPDATE SET
 		   name = CASE WHEN excluded.name != '' THEN excluded.name ELSE peers.name END,
+		   enc_public_key = CASE WHEN length(excluded.enc_public_key) = 32 THEN excluded.enc_public_key ELSE peers.enc_public_key END,
 		   addrs = CASE WHEN excluded.addrs != '[]' AND excluded.addrs != 'null' THEN excluded.addrs ELSE peers.addrs END,
 		   islands = CASE WHEN excluded.islands != '[]' AND excluded.islands != 'null' THEN excluded.islands ELSE peers.islands END,
 		   last_seen = excluded.last_seen,
 		   source = excluded.source`,
-		p.NodeID, p.Name, p.PublicKey, string(addrsJSON), string(islandsJSON), trustedInt, revokedInt, p.LastSeen, p.Source,
+		p.NodeID, p.Name, p.PublicKey, p.EncPublicKey, string(addrsJSON), string(islandsJSON), trustedInt, revokedInt, p.LastSeen, p.Source,
 	)
 	return err
 }
@@ -254,13 +281,13 @@ func (s *Store) SetPeerTrust(nodeID string, trusted, revoked bool) error {
 
 // GetPeer retrieves a peer by NodeID.
 func (s *Store) GetPeer(nodeID string) (*PeerRecord, error) {
-	row := s.db.QueryRow(`SELECT node_id, name, public_key, addrs, islands, trusted, revoked, last_seen, source FROM peers WHERE node_id = ?`, nodeID)
+	row := s.db.QueryRow(`SELECT node_id, name, public_key, enc_public_key, addrs, islands, trusted, revoked, last_seen, source FROM peers WHERE node_id = ?`, nodeID)
 	return scanPeer(row)
 }
 
 // ListPeers returns all known peers.
 func (s *Store) ListPeers() ([]*PeerRecord, error) {
-	rows, err := s.db.Query(`SELECT node_id, name, public_key, addrs, islands, trusted, revoked, last_seen, source FROM peers ORDER BY last_seen DESC`)
+	rows, err := s.db.Query(`SELECT node_id, name, public_key, enc_public_key, addrs, islands, trusted, revoked, last_seen, source FROM peers ORDER BY last_seen DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -284,7 +311,7 @@ func scanPeer(s scanner) (*PeerRecord, error) {
 	var p PeerRecord
 	var addrsRaw, islandsRaw string
 	var trustedInt, revokedInt int
-	if err := s.Scan(&p.NodeID, &p.Name, &p.PublicKey, &addrsRaw, &islandsRaw, &trustedInt, &revokedInt, &p.LastSeen, &p.Source); err != nil {
+	if err := s.Scan(&p.NodeID, &p.Name, &p.PublicKey, &p.EncPublicKey, &addrsRaw, &islandsRaw, &trustedInt, &revokedInt, &p.LastSeen, &p.Source); err != nil {
 		return nil, err
 	}
 	_ = json.Unmarshal([]byte(addrsRaw), &p.Addrs)
@@ -500,4 +527,131 @@ func scanTransfer(s scanner) (*TransferRecord, error) {
 		}
 	}
 	return &tr, nil
+}
+
+// DTNBundleRecord persists a DTN bundle and its local custody/delivery state.
+type DTNBundleRecord struct {
+	BundleID      string `json:"bundle_id"`
+	SourceID      string `json:"source_id"`
+	SourcePub     string `json:"source_pub"`
+	DestinationID string `json:"destination_id"`
+	IslandID      string `json:"island_id,omitempty"`
+	Kind          string `json:"kind"`
+	Priority      int    `json:"priority"`
+	HopCount      int    `json:"hop_count"`
+	MaxHops       int    `json:"max_hops"`
+	CreatedAt     int64  `json:"created_at"`
+	ExpiresAt     int64  `json:"expires_at"`
+	EphemeralPub  string `json:"ephemeral_pub"`
+	Ciphertext    string `json:"ciphertext"`
+	Signature     string `json:"signature"`
+	State         string `json:"state"` // "queued", "carrying", "delivered", "expired", "acked"
+	CustodyHolder string `json:"custody_holder"`
+	SizeBytes     int    `json:"size_bytes"`
+}
+
+// MarkDTNSeen records a bundle_id for duplicate suppression. Returns true if newly seen.
+func (s *Store) MarkDTNSeen(bundleID string, now int64) (bool, error) {
+	res, err := s.db.Exec(`INSERT OR IGNORE INTO dtn_seen (bundle_id, seen_at) VALUES (?, ?)`, bundleID, now)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// IsDTNSeen checks if bundle_id has already been seen.
+func (s *Store) IsDTNSeen(bundleID string) bool {
+	var id string
+	err := s.db.QueryRow(`SELECT bundle_id FROM dtn_seen WHERE bundle_id = ?`, bundleID).Scan(&id)
+	return err == nil
+}
+
+// CourierStorageUsed returns total ciphertext bytes currently held in queued/carrying state.
+func (s *Store) CourierStorageUsed() (int64, error) {
+	var total sql.NullInt64
+	err := s.db.QueryRow(`SELECT SUM(size_bytes) FROM dtn_bundles WHERE state IN ('queued', 'carrying')`).Scan(&total)
+	if err != nil {
+		return 0, err
+	}
+	return total.Int64, nil
+}
+
+// SaveDTNBundle inserts or updates a DTN bundle record.
+func (s *Store) SaveDTNBundle(r *DTNBundleRecord) error {
+	_, err := s.db.Exec(
+		`INSERT INTO dtn_bundles (bundle_id, source_id, source_pub, destination_id, island_id, kind, priority, hop_count, max_hops, created_at, expires_at, ephemeral_pub, ciphertext, signature, state, custody_holder, size_bytes)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(bundle_id) DO UPDATE SET
+		   hop_count = excluded.hop_count,
+		   state = excluded.state,
+		   custody_holder = excluded.custody_holder`,
+		r.BundleID, r.SourceID, r.SourcePub, r.DestinationID, r.IslandID, r.Kind,
+		r.Priority, r.HopCount, r.MaxHops, r.CreatedAt, r.ExpiresAt,
+		r.EphemeralPub, r.Ciphertext, r.Signature, r.State, r.CustodyHolder, r.SizeBytes,
+	)
+	return err
+}
+
+// UpdateDTNState updates the state and custody holder of a bundle.
+func (s *Store) UpdateDTNState(bundleID, state, custodyHolder string) error {
+	_, err := s.db.Exec(`UPDATE dtn_bundles SET state = ?, custody_holder = ? WHERE bundle_id = ?`, state, custodyHolder, bundleID)
+	return err
+}
+
+// ListForwardableDTNBundles returns non-expired bundles in queued/carrying state ordered by priority.
+func (s *Store) ListForwardableDTNBundles(nowUnix int64) ([]*DTNBundleRecord, error) {
+	rows, err := s.db.Query(
+		`SELECT bundle_id, source_id, source_pub, destination_id, island_id, kind, priority, hop_count, max_hops, created_at, expires_at, ephemeral_pub, ciphertext, signature, state, custody_holder, size_bytes
+		 FROM dtn_bundles WHERE state IN ('queued', 'carrying') AND expires_at > ? AND hop_count < max_hops
+		 ORDER BY priority DESC, created_at ASC`, nowUnix,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*DTNBundleRecord
+	for rows.Next() {
+		r, err := scanDTN(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ListDTNBundles returns all stored DTN bundles (up to limit).
+func (s *Store) ListDTNBundles(limit int) ([]*DTNBundleRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(
+		`SELECT bundle_id, source_id, source_pub, destination_id, island_id, kind, priority, hop_count, max_hops, created_at, expires_at, ephemeral_pub, ciphertext, signature, state, custody_holder, size_bytes
+		 FROM dtn_bundles ORDER BY created_at DESC LIMIT ?`, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*DTNBundleRecord
+	for rows.Next() {
+		r, err := scanDTN(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func scanDTN(s scanner) (*DTNBundleRecord, error) {
+	var r DTNBundleRecord
+	err := s.Scan(&r.BundleID, &r.SourceID, &r.SourcePub, &r.DestinationID, &r.IslandID, &r.Kind,
+		&r.Priority, &r.HopCount, &r.MaxHops, &r.CreatedAt, &r.ExpiresAt,
+		&r.EphemeralPub, &r.Ciphertext, &r.Signature, &r.State, &r.CustodyHolder, &r.SizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
 }

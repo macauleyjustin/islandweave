@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/islandweave/islandweave/core/beacon"
+	"github.com/islandweave/islandweave/core/identity"
 	"github.com/islandweave/islandweave/core/islands"
 	"github.com/islandweave/islandweave/core/storage"
 )
@@ -30,6 +32,12 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/transfers", d.handleTransfers)
 	mux.HandleFunc("/v1/transfers/send", d.handleTransferSend)
 	mux.HandleFunc("/v1/transfers/cancel", d.handleTransferCancel)
+	mux.HandleFunc("/v1/peers/import-key", d.handlePeerImportKey)
+	mux.HandleFunc("/v1/courier/status", d.handleCourierStatus)
+	mux.HandleFunc("/v1/courier/queue", d.handleCourierQueue)
+	mux.HandleFunc("/v1/courier/send", d.handleCourierSend)
+	mux.HandleFunc("/v1/courier/export", d.handleCourierExport)
+	mux.HandleFunc("/v1/courier/import", d.handleCourierImport)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -54,9 +62,11 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	d.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"node_id":      d.id.ID,
-		"node_name":    d.id.Name,
-		"p2p_addr":     d.P2PAddr(),
+		"node_id":        d.id.ID,
+		"node_name":      d.id.Name,
+		"public_key":     base64.StdEncoding.EncodeToString(d.id.PublicKey),
+		"enc_public_key": base64.StdEncoding.EncodeToString(d.id.EncPublicKey),
+		"p2p_addr":       d.P2PAddr(),
 		"control_addr": d.ControlAddr(),
 		"gateway_addr": d.GatewayAddr(),
 		"islands":      len(isl),
@@ -478,4 +488,141 @@ func (d *Daemon) handleTransferCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "canceled", "transfer_id": req.TransferID})
+}
+
+func (d *Daemon) handlePeerImportKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Name         string `json:"name"`
+		PublicKey    string `json:"public_key"`
+		EncPublicKey string `json:"enc_public_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.PublicKey == "" || req.EncPublicKey == "" {
+		writeErr(w, http.StatusBadRequest, "public_key and enc_public_key are required")
+		return
+	}
+	pub, err := base64.StdEncoding.DecodeString(req.PublicKey)
+	if err != nil || len(pub) != 32 {
+		writeErr(w, http.StatusBadRequest, "invalid public_key")
+		return
+	}
+	encPub, err := base64.StdEncoding.DecodeString(req.EncPublicKey)
+	if err != nil || len(encPub) != 32 {
+		writeErr(w, http.StatusBadRequest, "invalid enc_public_key")
+		return
+	}
+	nodeID := identity.DeriveNodeID(pub)
+	if err := d.store.UpsertPeer(&storage.PeerRecord{
+		NodeID:       nodeID,
+		Name:         req.Name,
+		PublicKey:    pub,
+		EncPublicKey: encPub,
+		LastSeen:     time.Now().Unix(),
+		Source:       "manual-key",
+	}); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"node_id": nodeID, "status": "imported"})
+}
+
+func (d *Daemon) handleCourierStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	used, _ := d.store.CourierStorageUsed()
+	fwd, _ := d.store.ListForwardableDTNBundles(time.Now().Unix())
+	writeJSON(w, http.StatusOK, map[string]any{
+		"forwarding_enabled": d.courierForwardingEnabled(),
+		"storage_used_bytes": used,
+		"storage_quota":      d.maxCourierBytes(),
+		"forwardable_count":  len(fwd),
+	})
+}
+
+func (d *Daemon) handleCourierQueue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	list, err := d.store.ListDTNBundles(100)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleCourierSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		To         string `json:"to"`
+		IslandID   string `json:"island_id"`
+		Body       string `json:"body"`
+		Priority   int    `json:"priority"`
+		MaxHops    int    `json:"max_hops"`
+		TTLSeconds int64  `json:"ttl_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.To == "" || req.Body == "" {
+		writeErr(w, http.StatusBadRequest, "to and body are required")
+		return
+	}
+	ttl := time.Duration(req.TTLSeconds) * time.Second
+	rec, err := d.QueueDTNMessage(req.To, req.IslandID, req.Body, req.Priority, req.MaxHops, ttl)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+func (d *Daemon) handleCourierExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FilePath == "" {
+		writeErr(w, http.StatusBadRequest, "file_path is required")
+		return
+	}
+	n, err := d.ExportCourierPack(req.FilePath)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"exported_bundles": n, "file_path": req.FilePath})
+}
+
+func (d *Daemon) handleCourierImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.FilePath == "" {
+		writeErr(w, http.StatusBadRequest, "file_path is required")
+		return
+	}
+	delivered, carrying, skipped, err := d.ImportCourierPack(req.FilePath)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"delivered": delivered,
+		"carrying":  carrying,
+		"skipped":   skipped,
+	})
 }
