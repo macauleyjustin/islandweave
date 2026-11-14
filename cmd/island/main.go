@@ -1,0 +1,356 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/islandweave/islandweave/core/identity"
+)
+
+func defaultDataDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ".islandweave"
+	}
+	return filepath.Join(home, ".islandweave")
+}
+
+type client struct {
+	baseURL string
+	token   string
+	http    *http.Client
+}
+
+func newClient(dataDir string) (*client, error) {
+	addrBytes, err := os.ReadFile(filepath.Join(dataDir, "control.addr"))
+	if err != nil {
+		return nil, fmt.Errorf("islandd does not appear to be running (missing %s/control.addr): %w", dataDir, err)
+	}
+	tokBytes, err := os.ReadFile(filepath.Join(dataDir, "control.token"))
+	if err != nil {
+		return nil, fmt.Errorf("missing control token: %w", err)
+	}
+	return &client{
+		baseURL: "http://" + strings.TrimSpace(string(addrBytes)),
+		token:   strings.TrimSpace(string(tokBytes)),
+		http:    &http.Client{Timeout: 10 * time.Second},
+	}, nil
+}
+
+func (c *client) do(method, path string, body any) ([]byte, int, error) {
+	var r io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, 0, err
+		}
+		r = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, c.baseURL+path, r)
+	if err != nil {
+		return nil, 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	return out, resp.StatusCode, err
+}
+
+func main() {
+	global := flag.NewFlagSet("island", flag.ExitOnError)
+	dataDir := global.String("data-dir", defaultDataDir(), "IslandWeave data directory")
+	_ = global.Parse(os.Args[1:])
+
+	args := global.Args()
+	if len(args) == 0 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	cmd := args[0]
+	rest := args[1:]
+
+	switch cmd {
+	case "init":
+		fs := flag.NewFlagSet("init", flag.ExitOnError)
+		name := fs.String("name", "", "Node display name")
+		_ = fs.Parse(rest)
+		id, created, err := identity.LoadOrCreateNodeIdentity(*dataDir, *name)
+		fatalIf(err)
+		if created {
+			fmt.Printf("Initialized new IslandWeave node: %s (%s)\n", id.ID, id.Name)
+		} else {
+			fmt.Printf("Existing IslandWeave node: %s (%s)\n", id.ID, id.Name)
+		}
+	case "start":
+		fs := flag.NewFlagSet("start", flag.ExitOnError)
+		listen := fs.String("listen", "0.0.0.0:47472", "P2P listen address")
+		control := fs.String("control", "127.0.0.1:47471", "Control API address")
+		name := fs.String("name", "", "Node name")
+		_ = fs.Parse(rest)
+
+		bin, err := findDaemonBinary()
+		fatalIf(err)
+		cArgs := []string{"--data-dir", *dataDir, "--listen", *listen, "--control", *control}
+		if *name != "" {
+			cArgs = append(cArgs, "--name", *name)
+		}
+		logPath := filepath.Join(*dataDir, "islandd.log")
+		_ = os.MkdirAll(*dataDir, 0o700)
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		fatalIf(err)
+		proc := exec.Command(bin, cArgs...)
+		proc.Stdout = logFile
+		proc.Stderr = logFile
+		fatalIf(proc.Start())
+		_ = logFile.Close()
+		fmt.Printf("Started islandd (PID %d), logs at %s\n", proc.Process.Pid, logPath)
+	case "stop":
+		pidBytes, err := os.ReadFile(filepath.Join(*dataDir, "islandd.pid"))
+		fatalIf(err)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+		fatalIf(err)
+		p, err := os.FindProcess(pid)
+		fatalIf(err)
+		fatalIf(p.Signal(syscall.SIGTERM))
+		fmt.Printf("Sent SIGTERM to islandd (PID %d)\n", pid)
+	case "status":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/status", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "create":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island create <name> [--visibility public|private|invite-only]")
+			os.Exit(1)
+		}
+		name := rest[0]
+		fs := flag.NewFlagSet("create", flag.ExitOnError)
+		vis := fs.String("visibility", "invite-only", "Island visibility")
+		_ = fs.Parse(rest[1:])
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/islands", map[string]string{
+			"name":       name,
+			"visibility": *vis,
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "islands":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/islands", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "invite":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island invite <island-id>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/islands/invite", map[string]any{
+			"island_id": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "join":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island join <invite-token>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/islands/join", map[string]string{
+			"token": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "leave":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island leave <island-id>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/islands/leave", map[string]string{
+			"island_id": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "discover":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/discover", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "peers":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/peers", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "connect":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island connect <host:port>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/peers/connect", map[string]string{
+			"addr": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "trust":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island trust <node-id>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/peers/trust", map[string]string{
+			"node_id": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "revoke":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island revoke <node-id>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/peers/revoke", map[string]string{
+			"node_id": rest[0],
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "beacon":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island beacon <on|off|status> [--mode public|restricted] [--island <id>]")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		switch rest[0] {
+		case "status":
+			out, code, err := c.do(http.MethodGet, "/v1/beacon", nil)
+			fatalIf(err)
+			printResp(out, code)
+		case "off":
+			out, code, err := c.do(http.MethodPost, "/v1/beacon", map[string]string{"mode": "silent"})
+			fatalIf(err)
+			printResp(out, code)
+		case "on":
+			fs := flag.NewFlagSet("beacon-on", flag.ExitOnError)
+			mode := fs.String("mode", "public", "Beacon mode (public|restricted)")
+			islandID := fs.String("island", "", "Island ID to advertise")
+			_ = fs.Parse(rest[1:])
+			out, code, err := c.do(http.MethodPost, "/v1/beacon", map[string]string{
+				"mode":      *mode,
+				"island_id": *islandID,
+			})
+			fatalIf(err)
+			printResp(out, code)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown beacon subcommand: %s\n", rest[0])
+			os.Exit(1)
+		}
+	case "send-msg":
+		if len(rest) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: island send-msg <node-id> <message>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/messages/send", map[string]string{
+			"to":   rest[0],
+			"body": strings.Join(rest[1:], " "),
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "messages":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/messages", nil)
+		fatalIf(err)
+		printResp(out, code)
+	default:
+		printUsage()
+		os.Exit(1)
+	}
+}
+
+func findDaemonBinary() (string, error) {
+	if exe, err := os.Executable(); err == nil {
+		cand := filepath.Join(filepath.Dir(exe), "islandd")
+		if _, err := os.Stat(cand); err == nil {
+			return cand, nil
+		}
+	}
+	return exec.LookPath("islandd")
+}
+
+func printResp(raw []byte, code int) {
+	var v any
+	if err := json.Unmarshal(raw, &v); err == nil {
+		pretty, _ := json.MarshalIndent(v, "", "  ")
+		fmt.Println(string(pretty))
+	} else {
+		fmt.Println(string(raw))
+	}
+	if code >= 400 {
+		os.Exit(1)
+	}
+}
+
+func fatalIf(err error) {
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+}
+
+func printUsage() {
+	fmt.Println(`IslandWeave CLI (Phase 1)
+
+Usage:
+  island [--data-dir <dir>] <command> [args]
+
+Commands:
+  init [--name <name>]                 Initialize node identity
+  start / stop / status                Manage or inspect islandd daemon
+  create <name>                        Create a new Island
+  islands                              List joined Islands
+  invite <island-id>                   Create a signed Island invite token
+  join <token>                         Join an Island using an invite token
+  leave <island-id>                    Leave an Island
+  discover                             List nearby Beacon-discovered peers
+  peers                                List known and connected peers
+  connect <host:port>                  Connect to a peer via IWP-LINK
+  trust <node-id>                      Mark a peer as trusted
+  revoke <node-id>                     Revoke a peer and close active link
+  beacon on|off|status                 Control Beacon Mode
+  send-msg <node-id> <message>         Send an encrypted message to a peer
+  messages                             List stored messages`)
+}
