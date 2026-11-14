@@ -426,6 +426,66 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unknown courier subcommand: %s\n", rest[0])
 			os.Exit(1)
 		}
+	case "mail":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island mail <send|inbox|outbox|drafts|sent> [args]")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		switch rest[0] {
+		case "inbox", "outbox", "drafts", "sent":
+			out, code, err := c.do(http.MethodGet, "/v1/mail?folder="+rest[0], nil)
+			fatalIf(err)
+			printResp(out, code)
+		case "send":
+			fs := flag.NewFlagSet("mail-send", flag.ExitOnError)
+			to := fs.String("to", "", "Recipient Node ID")
+			subj := fs.String("subject", "", "Mail subject")
+			body := fs.String("body", "", "Mail body")
+			_ = fs.Parse(rest[1:])
+			if *to == "" || *body == "" {
+				fmt.Fprintln(os.Stderr, "usage: island mail send --to <node-id> --subject <subj> --body <text>")
+				os.Exit(1)
+			}
+			out, code, err := c.do(http.MethodPost, "/v1/mail/send", map[string]any{
+				"to":      *to,
+				"subject": *subj,
+				"body":    *body,
+			})
+			fatalIf(err)
+			printResp(out, code)
+		default:
+			fmt.Fprintf(os.Stderr, "unknown mail subcommand: %s\n", rest[0])
+			os.Exit(1)
+		}
+	case "publish":
+		fs := flag.NewFlagSet("publish", flag.ExitOnError)
+		channel := fs.String("channel", "community-news", "Bulletin channel")
+		title := fs.String("title", "", "Bulletin title")
+		summary := fs.String("summary", "", "Short summary")
+		body := fs.String("body", "", "Bulletin body")
+		_ = fs.Parse(rest)
+		if *title == "" {
+			fmt.Fprintln(os.Stderr, "usage: island publish --channel <ch> --title <title> --body <text>")
+			os.Exit(1)
+		}
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/bulletins/publish", map[string]any{
+			"channel": *channel,
+			"title":   *title,
+			"summary": *summary,
+			"body":    *body,
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "bulletins":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/bulletins", nil)
+		fatalIf(err)
+		printResp(out, code)
 	default:
 		printUsage()
 		os.Exit(1)

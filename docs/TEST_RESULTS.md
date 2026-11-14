@@ -15,8 +15,9 @@ Executed on `darwin/arm64` (Go 1.27.4) after final Phase 2 edits:
 | `tests` | `TestPhase2FileTransferIWTP` | PASS | 0.39s |
 | `tests` | `TestPhase2StaticWebsiteHostingAndOfflineCache` | PASS | 0.09s |
 | `tests` | `TestPhase2TransferResumeAfterReconnect` | PASS | 0.39s |
-| `tests` | `TestPhase3CourierRelayNeverSimultaneouslyOnline` | PASS | 0.32s |
-| `tests` | `TestPhase3PhysicalCourierExportImportAndQuota` | PASS | 0.08s |
+| `tests` | `TestPhase3CourierRelayNeverSimultaneouslyOnline` | PASS | 0.33s |
+| `tests` | `TestPhase3PhysicalCourierExportImportAndQuota` | PASS | 0.11s |
+| `tests` | `TestPhase4MailAndBulletinThroughCourier` | PASS | 0.43s |
 
 ### Verified Scenarios
 1. **Unauthenticated Control API rejection:** `GET /v1/status` without bearer token returns `401 Unauthorized`.

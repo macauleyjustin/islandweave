@@ -1,6 +1,6 @@
 # IslandWeave Implementation Status
 
-**Current Milestone:** Phase 3 — Delay-Tolerant Store-and-Forward (`IWP-DTN` & Physical Courier Mode)
+**Current Milestone:** Phase 4 — Decentralized Mail (`IWMP`) & Community Bulletins (`IWBN`)
 
 | Subsystem / Module | Status | Notes |
 |---|---|---|
@@ -17,7 +17,8 @@
 | `island` CLI (`cmd/island`) | Implemented and tested | Full Phase 1 & Phase 2 commands (`host`, `services`, `fetch`, `send`, `transfers`, `cancel-transfer`, etc.). |
 | Cross-Platform Compilation | Implemented but not fully tested | Builds cleanly for `darwin/arm64`, `linux/amd64`, `linux/arm64`, `windows/amd64`; runtime tested on `darwin/arm64` only. |
 | `IWP-DTN` Store-and-Forward & Courier (`protocols/dtn`) | Implemented and tested | E2E X25519+ChaCha20-Poly1305 encrypted bundles, hop limits, expiration, duplicate suppression, storage quotas, custody/delivery acks, physical `.iwcourier` export/import. |
-| `IWMP` Mail & `IWBN` Bulletins | Designed but not implemented | Scheduled for Phase 4. |
+| `IWMP` Mail (`protocols/iwmp`) | Implemented and tested | E2E encrypted offline mail over `IWP-DTN`, inbox/outbox/drafts/sent, attachments, search, Digital Post Office forwarding, delivery acks. |
+| `IWBN` Bulletins (`protocols/iwbn`) | Implemented and tested | Signed versioned bulletins, channel subscriptions, live & `.iwcourier` sync, verified official emergency publisher check. |
 | VPS Relay, Tor Transport & Federation | Designed but not implemented | Scheduled for Phase 5. |
 | IslandWeave Desktop & Navigator Browser | Designed but not implemented | Scheduled for Phase 6. |
 | `IWST` Satellite Simulator | Designed but not implemented | Scheduled for Phase 7. |

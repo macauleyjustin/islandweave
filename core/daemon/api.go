@@ -10,6 +10,7 @@ import (
 	"github.com/islandweave/islandweave/core/identity"
 	"github.com/islandweave/islandweave/core/islands"
 	"github.com/islandweave/islandweave/core/storage"
+	"github.com/islandweave/islandweave/protocols/iwmp"
 )
 
 func (d *Daemon) registerRoutes(mux *http.ServeMux) {
@@ -38,6 +39,11 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/courier/send", d.handleCourierSend)
 	mux.HandleFunc("/v1/courier/export", d.handleCourierExport)
 	mux.HandleFunc("/v1/courier/import", d.handleCourierImport)
+	mux.HandleFunc("/v1/mail", d.handleMail)
+	mux.HandleFunc("/v1/mail/send", d.handleMailSend)
+	mux.HandleFunc("/v1/bulletins", d.handleBulletins)
+	mux.HandleFunc("/v1/bulletins/publish", d.handleBulletinPublish)
+	mux.HandleFunc("/v1/bulletins/subscribe", d.handleBulletinSubscribe)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -625,4 +631,105 @@ func (d *Daemon) handleCourierImport(w http.ResponseWriter, r *http.Request) {
 		"carrying":  carrying,
 		"skipped":   skipped,
 	})
+}
+
+func (d *Daemon) handleMail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	folder := r.URL.Query().Get("folder")
+	query := r.URL.Query().Get("q")
+	list, err := d.store.ListMail(folder, query, 100)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleMailSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		To          string            `json:"to"`
+		ThreadID    string            `json:"thread_id"`
+		IslandID    string            `json:"island_id"`
+		Subject     string            `json:"subject"`
+		Body        string            `json:"body"`
+		Attachments []iwmp.Attachment `json:"attachments"`
+		Draft       bool              `json:"draft"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (!req.Draft && req.To == "") {
+		writeErr(w, http.StatusBadRequest, "to is required for sending mail")
+		return
+	}
+	rec, err := d.SendMail(req.To, req.ThreadID, req.IslandID, req.Subject, req.Body, req.Attachments, req.Draft)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, rec)
+}
+
+func (d *Daemon) handleBulletins(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	channel := r.URL.Query().Get("channel")
+	list, err := d.store.ListBulletins(channel, 100)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (d *Daemon) handleBulletinPublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Channel           string `json:"channel"`
+		Category          string `json:"category"`
+		Title             string `json:"title"`
+		Summary           string `json:"summary"`
+		Body              string `json:"body"`
+		IslandID          string `json:"island_id"`
+		OfficialEmergency bool   `json:"official_emergency"`
+		TTLSeconds        int64  `json:"ttl_seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Channel == "" || req.Title == "" {
+		writeErr(w, http.StatusBadRequest, "channel and title are required")
+		return
+	}
+	b, err := d.PublishBulletin(req.Channel, req.Category, req.Title, req.Summary, req.Body, req.IslandID, req.OfficialEmergency, time.Duration(req.TTLSeconds)*time.Second)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, b)
+}
+
+func (d *Daemon) handleBulletinSubscribe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Channel string `json:"channel"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Channel == "" {
+		writeErr(w, http.StatusBadRequest, "channel is required")
+		return
+	}
+	if err := d.store.SubscribeChannel(req.Channel); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "subscribed", "channel": req.Channel})
 }

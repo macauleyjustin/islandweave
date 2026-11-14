@@ -332,6 +332,7 @@ func (d *Daemon) registerAndServeLink(ctx context.Context, link *transport.Link,
 	go d.readLinkLoop(d.runCtx, link)
 	go d.resumePendingTransfers(link)
 	go d.syncDTNBundles(link)
+	go d.syncBulletins(link)
 }
 
 func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
@@ -395,7 +396,7 @@ func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
 				Payload:   env.Payload,
 			})
 		default:
-			if !d.handleDTNEnvelope(link, env) {
+			if !d.handleDTNEnvelope(link, env) && !d.handlePhase4Envelope(link, env) {
 				d.handlePhase2Envelope(link, env)
 			}
 		}

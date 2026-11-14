@@ -10,6 +10,8 @@ import (
 	"github.com/islandweave/islandweave/core/storage"
 	"github.com/islandweave/islandweave/core/transport"
 	"github.com/islandweave/islandweave/protocols/dtn"
+	"github.com/islandweave/islandweave/protocols/iwbn"
+	"github.com/islandweave/islandweave/protocols/iwmp"
 	"github.com/islandweave/islandweave/protocols/iwtp"
 )
 
@@ -124,26 +126,50 @@ func (d *Daemon) processIncomingBundle(b *dtn.Bundle, link *transport.Link) (out
 			if err := json.Unmarshal(plain, &ack); err == nil && ack.OriginalBundleID != "" {
 				_ = d.store.UpdateDTNState(ack.OriginalBundleID, "acked", d.id.ID)
 				_ = d.store.UpdateMessageStatus(ack.OriginalBundleID, "acked")
+				_ = d.store.UpdateMailDelivery(ack.OriginalBundleID, "acked")
 			}
 			_ = d.store.SaveDTNBundle(bundleToRecord(b, "delivered", d.id.ID))
 			return "acked", nil
 		}
 
-		var inner dtnMsgInner
-		bodyText := string(plain)
-		if err := json.Unmarshal(plain, &inner); err == nil && inner.Body != "" {
-			bodyText = inner.Body
+		if b.Kind == "mail" {
+			var mp iwmp.MailPayload
+			if err := json.Unmarshal(plain, &mp); err == nil {
+				mailID := mp.MailID
+				if mailID == "" {
+					mailID = b.BundleID
+				}
+				_ = d.store.SaveMail(&iwmp.MailRecord{
+					ID:          mailID,
+					ThreadID:    mp.ThreadID,
+					IslandID:    b.IslandID,
+					FromID:      b.SourceID,
+					ToID:        d.id.ID,
+					Subject:     mp.Subject,
+					Body:        mp.Body,
+					Attachments: mp.Attachments,
+					Folder:      "inbox",
+					Status:      "delivered",
+					Timestamp:   b.CreatedAt,
+				})
+			}
+		} else {
+			var inner dtnMsgInner
+			bodyText := string(plain)
+			if err := json.Unmarshal(plain, &inner); err == nil && inner.Body != "" {
+				bodyText = inner.Body
+			}
+			_ = d.store.SaveMessage(&storage.MessageRecord{
+				ID:          b.BundleID,
+				IslandID:    b.IslandID,
+				SenderID:    b.SourceID,
+				RecipientID: d.id.ID,
+				Body:        bodyText,
+				Direction:   "inbound",
+				Status:      "received",
+				Timestamp:   b.CreatedAt,
+			})
 		}
-		_ = d.store.SaveMessage(&storage.MessageRecord{
-			ID:          b.BundleID,
-			IslandID:    b.IslandID,
-			SenderID:    b.SourceID,
-			RecipientID: d.id.ID,
-			Body:        bodyText,
-			Direction:   "inbound",
-			Status:      "received",
-			Timestamp:   b.CreatedAt,
-		})
 		_ = d.store.SaveDTNBundle(bundleToRecord(b, "delivered", d.id.ID))
 
 		// Queue end-to-end delivery ack back to SourceID if we know their X25519 key
@@ -201,20 +227,27 @@ func (d *Daemon) processIncomingBundle(b *dtn.Bundle, link *transport.Link) (out
 	return "carrying", nil
 }
 
-// ExportCourierPack exports all forwardable DTN bundles to a portable file for removable storage transport.
+// ExportCourierPack exports all forwardable DTN bundles and active bulletins to a portable file for removable storage transport.
 func (d *Daemon) ExportCourierPack(outPath string) (int, error) {
-	list, err := d.store.ListForwardableDTNBundles(time.Now().Unix())
+	now := time.Now().Unix()
+	list, err := d.store.ListForwardableDTNBundles(now)
 	if err != nil {
 		return 0, err
 	}
+	bulletins, _ := d.store.ListBulletins("", 200)
 	pack := dtn.CourierPack{
 		Version:    1,
 		ExportedBy: d.id.ID,
-		ExportedAt: time.Now().Unix(),
+		ExportedAt: now,
 		Bundles:    make([]dtn.Bundle, 0, len(list)),
 	}
 	for _, r := range list {
 		pack.Bundles = append(pack.Bundles, *recordToBundle(r))
+	}
+	for _, b := range bulletins {
+		if b.ExpiresAt == 0 || b.ExpiresAt > now {
+			pack.Bulletins = append(pack.Bulletins, *b)
+		}
 	}
 	raw, err := json.MarshalIndent(pack, "", "  ")
 	if err != nil {
@@ -226,7 +259,7 @@ func (d *Daemon) ExportCourierPack(outPath string) (int, error) {
 	return len(pack.Bundles), nil
 }
 
-// ImportCourierPack imports DTN bundles from a physical courier file.
+// ImportCourierPack imports DTN bundles and signed bulletins from a physical courier file.
 func (d *Daemon) ImportCourierPack(inPath string) (delivered, carrying, skipped int, err error) {
 	raw, err := os.ReadFile(inPath)
 	if err != nil {
@@ -235,6 +268,13 @@ func (d *Daemon) ImportCourierPack(inPath string) (delivered, carrying, skipped 
 	var pack dtn.CourierPack
 	if err := json.Unmarshal(raw, &pack); err != nil {
 		return 0, 0, 0, fmt.Errorf("invalid courier pack: %w", err)
+	}
+	now := time.Now()
+	for i := range pack.Bulletins {
+		b := &pack.Bulletins[i]
+		if iwbn.VerifyBulletin(b, now) == nil {
+			_ = d.store.SaveBulletin(b)
+		}
 	}
 	for i := range pack.Bundles {
 		outcome, procErr := d.processIncomingBundle(&pack.Bundles[i], nil)

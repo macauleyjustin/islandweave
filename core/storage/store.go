@@ -12,6 +12,8 @@ import (
 
 	"github.com/islandweave/islandweave/core/islands"
 	"github.com/islandweave/islandweave/core/services"
+	"github.com/islandweave/islandweave/protocols/iwbn"
+	"github.com/islandweave/islandweave/protocols/iwmp"
 	_ "modernc.org/sqlite"
 )
 
@@ -154,6 +156,40 @@ func (s *Store) migrate() error {
 		`CREATE TABLE IF NOT EXISTS dtn_seen (
 			bundle_id TEXT PRIMARY KEY,
 			seen_at INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS mail (
+			id TEXT PRIMARY KEY,
+			thread_id TEXT NOT NULL,
+			island_id TEXT NOT NULL,
+			from_id TEXT NOT NULL,
+			to_id TEXT NOT NULL,
+			subject TEXT NOT NULL,
+			body TEXT NOT NULL,
+			attachments_json TEXT NOT NULL,
+			folder TEXT NOT NULL,
+			status TEXT NOT NULL,
+			timestamp INTEGER NOT NULL
+		);`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_folder_ts ON mail(folder, timestamp DESC);`,
+		`CREATE TABLE IF NOT EXISTS bulletins (
+			bulletin_id TEXT PRIMARY KEY,
+			channel TEXT NOT NULL,
+			category TEXT NOT NULL,
+			official_emergency INTEGER NOT NULL DEFAULT 0,
+			title TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			body TEXT NOT NULL,
+			island_id TEXT NOT NULL,
+			publisher_id TEXT NOT NULL,
+			publisher_pub TEXT NOT NULL,
+			bulletin_version INTEGER NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL,
+			signature TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS bulletin_subscriptions (
+			channel TEXT PRIMARY KEY,
+			subscribed_at INTEGER NOT NULL
 		);`,
 	}
 	for _, stmt := range stmts {
@@ -654,4 +690,145 @@ func scanDTN(s scanner) (*DTNBundleRecord, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// SaveMail inserts or updates an IWMP mail record.
+func (s *Store) SaveMail(m *iwmp.MailRecord) error {
+	if m.Timestamp == 0 {
+		m.Timestamp = time.Now().Unix()
+	}
+	attJSON, _ := json.Marshal(m.Attachments)
+	_, err := s.db.Exec(
+		`INSERT INTO mail (id, thread_id, island_id, from_id, to_id, subject, body, attachments_json, folder, status, timestamp)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   folder = excluded.folder,
+		   status = excluded.status,
+		   subject = excluded.subject,
+		   body = excluded.body,
+		   attachments_json = excluded.attachments_json`,
+		m.ID, m.ThreadID, m.IslandID, m.FromID, m.ToID, m.Subject, m.Body, string(attJSON), m.Folder, m.Status, m.Timestamp,
+	)
+	return err
+}
+
+// UpdateMailDelivery marks an outbound mail as delivered/acked and moves it from outbox to sent.
+func (s *Store) UpdateMailDelivery(id, status string) error {
+	_, err := s.db.Exec(`UPDATE mail SET status = ?, folder = 'sent' WHERE id = ? AND folder = 'outbox'`, status, id)
+	return err
+}
+
+// ListMail returns mail in the given folder (or all folders if folder == ""), optionally filtered by search query.
+func (s *Store) ListMail(folder, query string, limit int) ([]*iwmp.MailRecord, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `SELECT id, thread_id, island_id, from_id, to_id, subject, body, attachments_json, folder, status, timestamp FROM mail WHERE 1=1`
+	var args []any
+	if folder != "" {
+		q += ` AND folder = ?`
+		args = append(args, folder)
+	}
+	if query != "" {
+		q += ` AND (subject LIKE ? OR body LIKE ? OR from_id LIKE ? OR to_id LIKE ?)`
+		like := "%" + query + "%"
+		args = append(args, like, like, like, like)
+	}
+	q += ` ORDER BY timestamp DESC LIMIT ?`
+	args = append(args, limit)
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*iwmp.MailRecord
+	for rows.Next() {
+		var m iwmp.MailRecord
+		var attRaw string
+		if err := rows.Scan(&m.ID, &m.ThreadID, &m.IslandID, &m.FromID, &m.ToID, &m.Subject, &m.Body, &attRaw, &m.Folder, &m.Status, &m.Timestamp); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(attRaw), &m.Attachments)
+		out = append(out, &m)
+	}
+	return out, rows.Err()
+}
+
+// SaveBulletin inserts or updates a verified IWBN bulletin.
+func (s *Store) SaveBulletin(b *iwbn.Bulletin) error {
+	emergInt := 0
+	if b.OfficialEmergency {
+		emergInt = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO bulletins (bulletin_id, channel, category, official_emergency, title, summary, body, island_id, publisher_id, publisher_pub, bulletin_version, created_at, expires_at, signature)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(bulletin_id) DO UPDATE SET
+		   title = excluded.title,
+		   summary = excluded.summary,
+		   body = excluded.body,
+		   bulletin_version = excluded.bulletin_version,
+		   signature = excluded.signature`,
+		b.BulletinID, b.Channel, b.Category, emergInt, b.Title, b.Summary, b.Body, b.IslandID,
+		b.PublisherID, b.PublisherPub, b.BulletinVersion, b.CreatedAt, b.ExpiresAt, b.Signature,
+	)
+	return err
+}
+
+// ListBulletins returns bulletins, optionally filtered by channel.
+func (s *Store) ListBulletins(channel string, limit int) ([]*iwbn.Bulletin, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	q := `SELECT bulletin_id, channel, category, official_emergency, title, summary, body, island_id, publisher_id, publisher_pub, bulletin_version, created_at, expires_at, signature FROM bulletins`
+	var args []any
+	if channel != "" {
+		q += ` WHERE channel = ?`
+		args = append(args, channel)
+	}
+	q += ` ORDER BY created_at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*iwbn.Bulletin
+	for rows.Next() {
+		var b iwbn.Bulletin
+		var emergInt int
+		if err := rows.Scan(&b.BulletinID, &b.Channel, &b.Category, &emergInt, &b.Title, &b.Summary, &b.Body,
+			&b.IslandID, &b.PublisherID, &b.PublisherPub, &b.BulletinVersion, &b.CreatedAt, &b.ExpiresAt, &b.Signature); err != nil {
+			return nil, err
+		}
+		b.Version = 1
+		b.OfficialEmergency = emergInt != 0
+		out = append(out, &b)
+	}
+	return out, rows.Err()
+}
+
+// SubscribeChannel subscribes to an IWBN bulletin channel.
+func (s *Store) SubscribeChannel(channel string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO bulletin_subscriptions (channel, subscribed_at) VALUES (?, ?)`, channel, time.Now().Unix())
+	return err
+}
+
+// ListSubscriptions returns subscribed IWBN channels.
+func (s *Store) ListSubscriptions() ([]string, error) {
+	rows, err := s.db.Query(`SELECT channel FROM bulletin_subscriptions ORDER BY channel ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ch string
+		if err := rows.Scan(&ch); err != nil {
+			return nil, err
+		}
+		out = append(out, ch)
+	}
+	return out, rows.Err()
 }

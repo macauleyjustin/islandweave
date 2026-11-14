@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/islandweave/islandweave/core/identity"
+	"github.com/islandweave/islandweave/protocols/iwbn"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 )
@@ -65,10 +66,11 @@ type DeliveryAckPayload struct {
 
 // CourierPack is the portable file format for physical removable storage transport.
 type CourierPack struct {
-	Version    int      `json:"version"`
-	ExportedBy string   `json:"exported_by"`
-	ExportedAt int64    `json:"exported_at"`
-	Bundles    []Bundle `json:"bundles"`
+	Version    int             `json:"version"`
+	ExportedBy string          `json:"exported_by"`
+	ExportedAt int64           `json:"exported_at"`
+	Bundles    []Bundle        `json:"bundles"`
+	Bulletins  []iwbn.Bulletin `json:"bulletins,omitempty"`
 }
 
 // CreateBundle encrypts plaintext for destEncPub (X25519) and signs the bundle with sender's Ed25519 key.
