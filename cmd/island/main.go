@@ -559,20 +559,34 @@ func main() {
 		out, code, err := c.do(http.MethodGet, "/v1/satellite/"+rest[0], nil)
 		fatalIf(err)
 		printResp(out, code)
+	case "desktop", "navigator":
+		binName := "island-" + cmd
+		binPath, err := findSiblingBinary(binName)
+		fatalIf(err)
+		launchArgs := append([]string{"--data-dir", *dataDir}, rest...)
+		proc := exec.Command(binPath, launchArgs...)
+		proc.Stdout = os.Stdout
+		proc.Stderr = os.Stderr
+		proc.Stdin = os.Stdin
+		fatalIf(proc.Run())
 	default:
 		printUsage()
 		os.Exit(1)
 	}
 }
 
-func findDaemonBinary() (string, error) {
+func findSiblingBinary(name string) (string, error) {
 	if exe, err := os.Executable(); err == nil {
-		cand := filepath.Join(filepath.Dir(exe), "islandd")
+		cand := filepath.Join(filepath.Dir(exe), name)
 		if _, err := os.Stat(cand); err == nil {
 			return cand, nil
 		}
 	}
-	return exec.LookPath("islandd")
+	return exec.LookPath(name)
+}
+
+func findDaemonBinary() (string, error) {
+	return findSiblingBinary("islandd")
 }
 
 func printResp(raw []byte, code int) {
@@ -596,32 +610,39 @@ func fatalIf(err error) {
 }
 
 func printUsage() {
-	fmt.Println(`IslandWeave CLI (Phase 1)
+	fmt.Println(`IslandWeave CLI (v0.1.0)
 
 Usage:
   island [--data-dir <dir>] <command> [args]
 
 Commands:
-  init [--name <name>]                 Initialize node identity
-  start / stop / status                Manage or inspect islandd daemon
-  create <name>                        Create a new Island
-  islands                              List joined Islands
-  invite <island-id>                   Create a signed Island invite token
-  join <token>                         Join an Island using an invite token
-  leave <island-id>                    Leave an Island
-  discover                             List nearby Beacon-discovered peers
-  peers                                List known and connected peers
-  connect <host:port>                  Connect to a peer via IWP-LINK
-  trust <node-id>                      Mark a peer as trusted
-  revoke <node-id>                     Revoke a peer and close active link
-  beacon on|off|status                 Control Beacon Mode
-  send-msg <node-id> <message>         Send an encrypted message to a peer
-  messages                             List stored messages
-  host <dir> [--name <name>]           Host a static website on IslandWeave
-  services                             List hosted and cached services
-  fetch <service-name-or-id>           Fetch and cache a peer's website locally
-  send <file> --to <node-id>           Send a file via IWTP
-  transfers                            List active and completed file transfers
-  cancel-transfer <transfer-id>        Cancel a file transfer
-  courier status|queue|send|export|import  Manage delay-tolerant courier mode`)
+  init [--name <name>]                     Initialize node identity
+  start / stop / status                    Manage or inspect islandd daemon
+  desktop / navigator                      Launch Desktop Control Center or Navigator browser
+  create <name>                            Create a new Island
+  islands                                  List joined Islands
+  invite <island-id>                       Create a signed Island invite token
+  join <token>                             Join an Island using an invite token
+  leave <island-id>                        Leave an Island
+  discover                                 List nearby Beacon-discovered peers
+  peers                                    List known and connected peers
+  connect <host:port>                      Connect to a peer via IWP-LINK
+  trust <node-id>                          Mark a peer as trusted
+  revoke <node-id>                         Revoke a peer and close active link
+  beacon on|off|status                     Control Beacon Mode
+  send-msg <node-id> <message>             Send an encrypted message to a peer
+  messages                                 List stored messages
+  host <dir> [--name <name>]               Host a static website on IslandWeave
+  services                                 List hosted and cached services
+  fetch <service-name-or-id>               Fetch and cache a peer's website locally
+  send <file> --to <node-id>               Send a file via IWTP
+  transfers                                List active and completed file transfers
+  cancel-transfer <transfer-id>            Cancel a file transfer
+  courier status|queue|send|export|import  Manage delay-tolerant courier mode
+  mail send|inbox|outbox|sent              Manage encrypted IWMP mail
+  publish / bulletins                      Publish or read signed IWBN bulletins
+  server status                            Inspect relay/gateway server status
+  tor status|config                        Inspect or configure Tor SOCKS5 policy
+  federation list|revoke                   Manage inter-Island federation agreements
+  satellite status|passes                  Inspect IWST satellite pass status`)
 }
