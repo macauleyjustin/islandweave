@@ -20,10 +20,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/islandweave/islandweave/apps/gateway"
 	"github.com/islandweave/islandweave/core/beacon"
+	"github.com/islandweave/islandweave/core/discovery"
 	"github.com/islandweave/islandweave/core/identity"
 	"github.com/islandweave/islandweave/core/objects"
+	"github.com/islandweave/islandweave/core/routing"
+	"github.com/islandweave/islandweave/core/security"
 	"github.com/islandweave/islandweave/core/services"
 	"github.com/islandweave/islandweave/core/storage"
+	"github.com/islandweave/islandweave/core/synchronization"
 	"github.com/islandweave/islandweave/core/transport"
 	"github.com/islandweave/islandweave/protocols/iwtp"
 	"github.com/islandweave/islandweave/transports/tor"
@@ -37,6 +41,7 @@ type Config struct {
 	ControlAddr              string // Local control API address, e.g. "127.0.0.1:47471"
 	GatewayAddr              string // Local browser gateway address, e.g. "127.0.0.1:47475"
 	MulticastAddr            string // UDP multicast address, default "239.255.73.87:47470"
+	BootstrapPeers           []string
 	DisableBeacon            bool       // Optional flag for isolated unit tests
 	DisableCourierForwarding bool       // Disable intermediate DTN bundle forwarding
 	MaxCourierBytes          int64      // Courier storage quota in bytes (default 64 MiB)
@@ -51,8 +56,12 @@ type Daemon struct {
 	store        *storage.Store
 	objStore     *objects.Store
 	beacon       *beacon.Service
+	disc         *discovery.Coordinator
+	sec          *security.Engine
+	syncEng      *synchronization.Engine
 	gw           *gateway.Server
 	controlToken string
+	startedAt    time.Time
 
 	p2pLn     net.Listener
 	controlLn net.Listener
@@ -111,7 +120,11 @@ func New(cfg Config) (*Daemon, error) {
 		id:           id,
 		store:        store,
 		objStore:     objStore,
+		disc:         discovery.NewCoordinator(id.ID, cfg.BootstrapPeers),
+		sec:          security.NewEngine(),
+		syncEng:      synchronization.NewEngine(),
 		controlToken: token,
+		startedAt:    time.Now(),
 		links:        make(map[string]*transport.Link),
 		objWaiters:   make(map[string]chan iwtp.ObjDataPayload),
 		svcWaiters:   make(map[string]chan []services.ServiceRecord),
@@ -220,6 +233,27 @@ func (d *Daemon) ControlAddr() string { return d.controlLn.Addr().String() }
 func (d *Daemon) GatewayAddr() string { return d.gw.Addr() }
 func (d *Daemon) Token() string       { return d.controlToken }
 
+// PublicIdentity returns the node's public signing and encryption keys for out-of-band / simulator exchange.
+func (d *Daemon) PublicIdentity() (id string, name string, pub []byte, encPub []byte) {
+	return d.id.ID, d.id.Name, d.id.PublicKey, d.id.EncPublicKey
+}
+
+// ImportPeerKey registers a peer's public signing and X25519 keys cleanly for offline DTN/courier delivery.
+func (d *Daemon) ImportPeerKey(name string, pub, encPub []byte) (*storage.PeerRecord, error) {
+	if len(pub) != ed25519.PublicKeySize {
+		return nil, errors.New("invalid Ed25519 public key length")
+	}
+	rec := &storage.PeerRecord{
+		NodeID:       identity.DeriveNodeID(pub),
+		Name:         name,
+		PublicKey:    pub,
+		EncPublicKey: encPub,
+		LastSeen:     time.Now().Unix(),
+		Source:       "manual-key",
+	}
+	return rec, d.store.UpsertPeer(rec)
+}
+
 func (d *Daemon) onPeerDiscovered(dp beacon.DiscoveredPeer, pub ed25519.PublicKey) {
 	var isl []string
 	if dp.Announcement.IslandID != "" {
@@ -285,16 +319,21 @@ func (d *Daemon) acceptLoop(ctx context.Context) {
 }
 
 func (d *Daemon) handleInbound(ctx context.Context, conn net.Conn) {
-	link, err := transport.HandshakeResponder(conn, transport.HandshakeConfig{
+	metered := security.WrapConn(conn, d.sec.Traffic)
+	link, err := transport.HandshakeResponder(metered, transport.HandshakeConfig{
 		Identity:      d.id,
 		Capabilities:  []string{transport.DefaultCapabilityMsg},
 		IslandIDs:     d.currentIslandIDs(),
 		AuthorizePeer: d.authorizePeer,
 	})
 	if err != nil {
+		d.sec.RecordAudit("auth", "", "deny", fmt.Sprintf("inbound handshake failed from %s: %v", conn.RemoteAddr(), err))
 		_ = conn.Close()
 		return
 	}
+	d.sec.Traffic.LinksAccepted.Add(1)
+	d.sec.RecordAudit("auth", link.PeerID(), "allow", fmt.Sprintf("inbound IWP-LINK/1 authenticated from %s", conn.RemoteAddr()))
+	_ = d.store.RecordActivity("connection", "Inbound authenticated link accepted", link.PeerID(), "ok")
 	d.registerAndServeLink(ctx, link, "inbound")
 }
 
@@ -314,7 +353,8 @@ func (d *Daemon) ConnectPeerWithOnion(ctx context.Context, directAddr, onionAddr
 	if err != nil {
 		return nil, err
 	}
-	link, err := transport.HandshakeInitiator(conn, transport.HandshakeConfig{
+	metered := security.WrapConn(conn, d.sec.Traffic)
+	link, err := transport.HandshakeInitiator(metered, transport.HandshakeConfig{
 		Identity:     d.id,
 		Capabilities: []string{transport.DefaultCapabilityMsg},
 		IslandIDs:    d.currentIslandIDs(),
@@ -326,9 +366,13 @@ func (d *Daemon) ConnectPeerWithOnion(ctx context.Context, directAddr, onionAddr
 		},
 	})
 	if err != nil {
+		d.sec.RecordAudit("auth", "", "deny", fmt.Sprintf("outbound handshake failed to %s: %v", directAddr, err))
 		_ = conn.Close()
 		return nil, err
 	}
+	d.sec.Traffic.LinksDialed.Add(1)
+	d.sec.RecordAudit("auth", link.PeerID(), "allow", fmt.Sprintf("outbound IWP-LINK/1 authenticated via %s", via))
+	_ = d.store.RecordActivity("connection", fmt.Sprintf("Connected via %s", via), link.PeerID(), "ok")
 	storedAddr := directAddr
 	if storedAddr == "" {
 		storedAddr = onionAddr
@@ -368,6 +412,7 @@ func (d *Daemon) registerAndServeLink(ctx context.Context, link *transport.Link,
 	go d.resumePendingTransfers(link)
 	go d.syncDTNBundles(link)
 	go d.syncBulletins(link)
+	go d.startPeerSyncAndDiscovery(link)
 }
 
 func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
@@ -389,6 +434,9 @@ func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
 		env, err := link.RecvEnvelope()
 		if err != nil {
 			return
+		}
+		if !d.sec.AllowPeerAction(link.PeerID()) {
+			continue
 		}
 		switch env.Type {
 		case "chat.msg":
@@ -431,7 +479,7 @@ func (d *Daemon) readLinkLoop(ctx context.Context, link *transport.Link) {
 				Payload:   env.Payload,
 			})
 		default:
-			if !d.handleDTNEnvelope(link, env) && !d.handlePhase4Envelope(link, env) {
+			if !d.handleDTNEnvelope(link, env) && !d.handlePhase4Envelope(link, env) && !d.handlePhase5Envelope(link, env) {
 				d.handlePhase2Envelope(link, env)
 			}
 		}
@@ -450,23 +498,14 @@ func (d *Daemon) SendMessage(ctx context.Context, peerID, islandID, body string)
 	d.mu.RUnlock()
 
 	if link == nil {
-		var dialAddr string
-		if p != nil && len(p.Addrs) > 0 {
-			dialAddr = p.Addrs[0]
-		} else {
-			for _, dp := range d.beacon.Discovered() {
-				if dp.Announcement.NodeID == peerID {
-					dialAddr = dp.DialAddr
-					break
-				}
-			}
+		routes := d.ComputeRoutes()
+		directAddr, onionAddr, rerr := routing.SelectDialTarget(routes, peerID)
+		if rerr != nil {
+			return nil, fmt.Errorf("peer %s is not connected and has no routable address", peerID)
 		}
-		if dialAddr == "" {
-			return nil, fmt.Errorf("peer %s is not connected and has no known address", peerID)
-		}
-		link, err = d.ConnectPeer(ctx, dialAddr)
+		link, err = d.ConnectPeerWithOnion(ctx, directAddr, onionAddr)
 		if err != nil {
-			return nil, fmt.Errorf("connect to %s (%s): %w", peerID, dialAddr, err)
+			return nil, fmt.Errorf("connect to %s: %w", peerID, err)
 		}
 	}
 

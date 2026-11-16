@@ -10,11 +10,11 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/islandweave/islandweave/platform/launch"
 )
 
 //go:embed ui/*
@@ -74,17 +74,6 @@ func NewHandler(dataDir string) (http.Handler, error) {
 	return mux, nil
 }
 
-func openBrowser(url string) {
-	switch runtime.GOOS {
-	case "darwin":
-		_ = exec.Command("open", url).Start()
-	case "linux":
-		_ = exec.Command("xdg-open", url).Start()
-	case "windows":
-		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
-	}
-}
-
 func main() {
 	dataDir := flag.String("data-dir", defaultDataDir(), "IslandWeave data directory")
 	listen := flag.String("listen", "127.0.0.1:47480", "Desktop Control Center listen address")
@@ -102,7 +91,7 @@ func main() {
 	url := "http://" + ln.Addr().String()
 	fmt.Printf("IslandWeave Desktop Control Center running at %s\n", url)
 	if !*noOpen {
-		openBrowser(url)
+		launch.AppWindow(url)
 	}
 	log.Fatal(http.Serve(ln, h))
 }

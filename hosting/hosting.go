@@ -19,6 +19,19 @@ import (
 
 // PublishStaticSite ingests all files in dir into objStore and returns a signed ServiceRecord and SiteManifest.
 func PublishStaticSite(objStore *objects.Store, id *identity.NodeIdentity, dir, name, islandID string, siteVersion int, ttl time.Duration) (*services.ServiceRecord, *services.SiteManifest, error) {
+	return PublishContent(objStore, id, dir, name, "website", islandID, siteVersion, ttl)
+}
+
+// PublishSharedDir ingests all files in dir as a browsable Shared File Library ("share") service.
+func PublishSharedDir(objStore *objects.Store, id *identity.NodeIdentity, dir, name, islandID string, siteVersion int, ttl time.Duration) (*services.ServiceRecord, *services.SiteManifest, error) {
+	return PublishContent(objStore, id, dir, name, "share", islandID, siteVersion, ttl)
+}
+
+// PublishContent ingests all files in dir into objStore and signs a ServiceRecord of svcType ("website" or "share").
+func PublishContent(objStore *objects.Store, id *identity.NodeIdentity, dir, name, svcType, islandID string, siteVersion int, ttl time.Duration) (*services.ServiceRecord, *services.SiteManifest, error) {
+	if svcType == "" {
+		svcType = "website"
+	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("stat site dir: %w", err)
@@ -93,7 +106,7 @@ func PublishStaticSite(objStore *objects.Store, id *identity.NodeIdentity, dir, 
 		return nil, nil, fmt.Errorf("store site manifest: %w", err)
 	}
 
-	rec, err := services.SignServiceRecord(id, name, "website", islandID, manifestHash, siteVersion, ttl)
+	rec, err := services.SignServiceRecord(id, name, svcType, islandID, manifestHash, siteVersion, ttl)
 	if err != nil {
 		return nil, nil, err
 	}

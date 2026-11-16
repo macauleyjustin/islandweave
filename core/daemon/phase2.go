@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/islandweave/islandweave/core/objects"
+	"github.com/islandweave/islandweave/core/routing"
 	"github.com/islandweave/islandweave/core/services"
 	"github.com/islandweave/islandweave/core/storage"
 	"github.com/islandweave/islandweave/core/transport"
@@ -28,21 +29,12 @@ func (d *Daemon) getOrDialLink(ctx context.Context, peerID string) (*transport.L
 	if link != nil {
 		return link, nil
 	}
-	var dialAddr string
-	if p != nil && len(p.Addrs) > 0 {
-		dialAddr = p.Addrs[0]
-	} else if d.beacon != nil {
-		for _, dp := range d.beacon.Discovered() {
-			if dp.Announcement.NodeID == peerID {
-				dialAddr = dp.DialAddr
-				break
-			}
-		}
+	routes := d.ComputeRoutes()
+	directAddr, onionAddr, rerr := routing.SelectDialTarget(routes, peerID)
+	if rerr != nil {
+		return nil, fmt.Errorf("peer %s is not connected and has no routable address", peerID)
 	}
-	if dialAddr == "" {
-		return nil, fmt.Errorf("peer %s is not connected and has no known address", peerID)
-	}
-	return d.ConnectPeer(ctx, dialAddr)
+	return d.ConnectPeerWithOnion(ctx, directAddr, onionAddr)
 }
 
 // SendFile ingests a local file into IWP-OBJECT and initiates an IWTP transfer to peerID.
@@ -131,17 +123,27 @@ func (d *Daemon) CancelTransfer(transferID string) error {
 
 // HostSite publishes a local static website directory as a signed IWP-SERVICE.
 func (d *Daemon) HostSite(dir, name, islandID string) (*services.ServiceRecord, *services.SiteManifest, error) {
+	return d.publishContent(dir, name, "website", islandID)
+}
+
+// ShareDirectory publishes a local directory as a browsable Shared File Library service.
+func (d *Daemon) ShareDirectory(dir, name, islandID string) (*services.ServiceRecord, *services.SiteManifest, error) {
+	return d.publishContent(dir, name, "share", islandID)
+}
+
+func (d *Daemon) publishContent(dir, name, svcType, islandID string) (*services.ServiceRecord, *services.SiteManifest, error) {
 	siteVersion := 1
 	if existing, err := d.store.GetServiceByNameOrID(name); err == nil && existing.IsLocal {
 		siteVersion = existing.SiteVersion + 1
 	}
-	rec, manifest, err := hosting.PublishStaticSite(d.objStore, d.id, dir, name, islandID, siteVersion, 0)
+	rec, manifest, err := hosting.PublishContent(d.objStore, d.id, dir, name, svcType, islandID, siteVersion, 0)
 	if err != nil {
 		return nil, nil, err
 	}
 	if err := d.store.SaveService(rec, true); err != nil {
 		return nil, nil, err
 	}
+	_ = d.store.RecordActivity("hosting", fmt.Sprintf("Published %s %q (v%d)", svcType, rec.Name, rec.SiteVersion), "", "ok")
 	return rec, manifest, nil
 }
 

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>IslandWeave Navigator</title>
 <style>
-  :root { --bg:#090d16; --bar:#111827; --panel:#1e293b; --border:#334155; --text:#f1f5f9; --muted:#94a3b8; --accent:#38bdf8; --ok:#22c55e; }
+  :root { --bg:#090d16; --bar:#111827; --panel:#1e293b; --border:#334155; --text:#f1f5f9; --muted:#94a3b8; --accent:#38bdf8; --ok:#22c55e; --warn:#f59e0b; }
   * { box-sizing:border-box; }
   body { margin:0; font-family:system-ui,-apple-system,sans-serif; background:var(--bg); color:var(--text); display:flex; flex-direction:column; height:100vh; }
   .tabs { display:flex; gap:4px; padding:6px 8px 0; background:#05080f; border-bottom:1px solid var(--border); overflow-x:auto; }
@@ -16,13 +16,14 @@
   .toolbar button { background:var(--panel); color:var(--text); border:1px solid var(--border); border-radius:6px; padding:6px 10px; cursor:pointer; }
   .toolbar button.go { background:var(--accent); color:#05080f; border:none; font-weight:600; }
   .verify-bar { display:flex; justify-content:space-between; align-items:center; padding:4px 12px; background:#0f172a; border-bottom:1px solid var(--border); font-size:.78rem; color:var(--muted); }
-  .bookmarks { display:flex; gap:10px; padding:4px 12px; background:var(--bar); border-bottom:1px solid var(--border); font-size:.8rem; }
-  .bookmarks a { color:var(--accent); text-decoration:none; cursor:pointer; }
+  .bookmarks { display:flex; gap:10px; padding:4px 12px; background:var(--bar); border-bottom:1px solid var(--border); font-size:.8rem; overflow-x:auto; }
+  .bookmarks a { color:var(--accent); text-decoration:none; cursor:pointer; white-space:nowrap; }
   .viewport { flex:1; overflow:auto; position:relative; }
-  .native { padding:1.5rem; max-width:960px; margin:0 auto; }
+  .native { padding:1.5rem; max-width:980px; margin:0 auto; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:1rem; margin-bottom:1rem; }
   iframe { width:100%; height:100%; border:none; background:#fff; display:none; }
   .badge { padding:2px 8px; border-radius:999px; background:#14532d; color:#86efac; font-weight:600; }
+  .badge.warn { background:#78350f; color:#fde68a; }
 </style>
 </head>
 <body>
@@ -32,14 +33,16 @@
   <button onclick="navigate(activeTab().uri)">&#8635;</button>
   <input id="addr" value="island://home" onkeydown="if(event.key==='Enter')navigate(this.value)">
   <button class="go" onclick="navigate(document.getElementById('addr').value)">Go</button>
-  <button onclick="addBookmark()">&#9733;</button>
-  <button onclick="newTab('island://home')">+</button>
+  <button onclick="addBookmark()" title="Bookmark">&#9733;</button>
+  <button onclick="navigate('island://downloads')" title="Downloads">DL</button>
+  <button onclick="newTab('island://home')" title="New Tab">+</button>
 </div>
 <div class="bookmarks" id="bookmarks">
   <a onclick="navigate('island://home')">Home</a>
   <a onclick="navigate('island://mail')">Mail</a>
   <a onclick="navigate('island://news')">News</a>
   <a onclick="navigate('island://files')">Files</a>
+  <a onclick="navigate('island://downloads')">Downloads</a>
   <a onclick="navigate('island://peers')">Peers</a>
   <a onclick="navigate('island://services')">Services</a>
 </div>
@@ -53,13 +56,14 @@
 </div>
 
 <script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let tabs = [{ id: 1, title: 'island://home', uri: 'island://home', history: ['island://home'], idx: 0 }];
 let activeId = 1;
 let customBookmarks = [];
 function activeTab() { return tabs.find(t => t.id === activeId) || tabs[0]; }
 function renderTabs() {
   document.getElementById('tabs').innerHTML = tabs.map(t =>
-    `<div class="tab ${t.id===activeId?'active':''}" onclick="switchTab(${t.id})"><span>${t.title}</span>${tabs.length>1?`<span onclick="event.stopPropagation();closeTab(${t.id})">&times;</span>`:''}</div>`
+    `<div class="tab ${t.id===activeId?'active':''}" onclick="switchTab(${t.id})"><span>${esc(t.title)}</span>${tabs.length>1?`<span onclick="event.stopPropagation();closeTab(${t.id})">&times;</span>`:''}</div>`
   ).join('');
 }
 function newTab(uri) {
@@ -74,19 +78,34 @@ function goBack() {
   const t = activeTab();
   if (t.idx > 0) { t.idx--; navigate(t.history[t.idx], false); }
 }
-function addBookmark() {
+async function navApi(path, method='GET', body=null) {
+  const opts = { method, headers: {} };
+  if (body !== null) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch('/nav/api' + path, opts);
+  return r.json();
+}
+async function addBookmark() {
   const u = activeTab().uri;
   if (!customBookmarks.includes(u)) {
     customBookmarks.push(u);
-    const a = document.createElement('a');
-    a.textContent = u.replace('island://','');
-    a.onclick = () => navigate(u);
-    document.getElementById('bookmarks').appendChild(a);
+    try { await navApi('/v1/navigator/bookmarks', 'POST', { uri: u, title: u.replace('island://','') }); } catch {}
+    renderSavedBookmarks();
   }
 }
-async function navApi(path) {
-  const r = await fetch('/nav/api' + path);
-  return r.json();
+async function renderSavedBookmarks() {
+  try {
+    const saved = await navApi('/v1/navigator/bookmarks');
+    (saved||[]).forEach(b => { if (!customBookmarks.includes(b.uri)) customBookmarks.push(b.uri); });
+  } catch {}
+  const bar = document.getElementById('bookmarks');
+  bar.querySelectorAll('a.saved').forEach(e => e.remove());
+  customBookmarks.forEach(u => {
+    const a = document.createElement('a');
+    a.className = 'saved';
+    a.textContent = u.replace('island://','');
+    a.onclick = () => navigate(u);
+    bar.appendChild(a);
+  });
 }
 async function navigate(uri, pushHistory=true) {
   const t = activeTab();
@@ -99,6 +118,7 @@ async function navigate(uri, pushHistory=true) {
   }
   document.getElementById('addr').value = uri;
   renderTabs();
+  try { navApi('/v1/navigator/history', 'POST', { uri, title: uri }); } catch {}
 
   const res = await (await fetch('/nav/resolve?uri=' + encodeURIComponent(uri))).json();
   const nativeEl = document.getElementById('native-view');
@@ -112,44 +132,50 @@ async function navigate(uri, pushHistory=true) {
     nativeEl.style.display = 'none';
     frameEl.style.display = 'block';
     frameEl.src = res.gateway_url;
-    document.getElementById('verify-info').textContent = `${res.source} | Service: ${res.service_id || res.service} | Publisher: ${res.publisher || 'unverified'}`;
+    document.getElementById('verify-info').textContent = `${res.source} | Verified Service: ${res.service_id || res.service} | Publisher: ${res.publisher || 'unverified'}`;
     return;
   }
   frameEl.style.display = 'none';
   frameEl.src = 'about:blank';
   nativeEl.style.display = 'block';
-  document.getElementById('verify-info').textContent = `IslandWeave Native View (${res.view})`;
+  document.getElementById('verify-info').textContent = `IslandWeave Native View (${res.view}) — Isolated From Untrusted Web Content`;
   await renderNative(res.view, nativeEl);
 }
 async function renderNative(view, el) {
   try {
     const st = await navApi('/v1/status');
-    document.getElementById('net-status').textContent = st.active_links > 0 ? `Connected (${st.active_links} peers)` : 'Offline / Local';
+    const netBadge = document.getElementById('net-status');
+    netBadge.textContent = st.active_links > 0 ? `Connected (${st.active_links} peers)` : 'Offline / Local';
+    netBadge.className = st.active_links > 0 ? 'badge' : 'badge warn';
     if (view === 'home') {
       const svcs = await navApi('/v1/services');
-      el.innerHTML = `<div class="card"><h2>IslandWeave Navigator</h2><p>Node: <b>${st.node_name}</b> (<code>${st.node_id}</code>)</p><p>Islands: ${st.islands} | Active Links: ${st.active_links}</p></div>
-        <div class="card"><h3>Hosted &amp; Cached Sites</h3>${(svcs||[]).map(s=>`<div><a style="color:var(--accent);cursor:pointer" onclick="navigate('island://${s.name}/')">island://${s.name}/</a> — ${s.is_local?'Live Local Host':'Cached Offline Replica'}</div>`).join('')||'No sites hosted or cached yet.'}</div>`;
+      const hist = await navApi('/v1/navigator/history').catch(()=>[]);
+      el.innerHTML = `<div class="card"><h2>IslandWeave Navigator</h2><p>Node: <b>${esc(st.node_name)}</b> (<code>${esc(st.node_id)}</code>)</p><p>Islands: ${st.islands} | Active Links: ${st.active_links} | Gateway: <code>${esc(st.gateway_addr)}</code></p></div>
+        <div class="card"><h3>Hosted Websites, Shared Libraries &amp; Cached Replicas</h3>${(svcs||[]).map(s=>`<div><a style="color:var(--accent);cursor:pointer" onclick="navigate('island://${esc(s.name)}/')">island://${esc(s.name)}/</a> [${esc(s.type||'website')} v${s.site_version}] — ${s.is_local?'Live Local Host':'Cached Offline Replica'}</div>`).join('')||'No sites hosted or cached yet.'}</div>
+        <div class="card"><h3>Recent Browsing History</h3>${(hist||[]).slice(0,8).map(h=>`<div><a style="color:var(--accent);cursor:pointer" onclick="navigate('${esc(h.uri)}')">${esc(h.uri)}</a></div>`).join('')||'No history yet.'}</div>`;
     } else if (view === 'mail') {
       const inbox = await navApi('/v1/mail?folder=inbox');
-      el.innerHTML = `<h2>IWMP Inbox</h2>` + ((inbox||[]).map(m=>`<div class="card"><b>${m.subject||'(no subject)'}</b><div>From: <code>${m.from_id}</code></div><p>${m.body}</p></div>`).join('')||'<div class="card">Inbox is empty.</div>');
+      el.innerHTML = `<h2>IWMP Inbox</h2>` + ((inbox||[]).map(m=>`<div class="card"><b>${esc(m.subject||'(no subject)')}</b><div>From: <code>${esc(m.from_id)}</code></div><p>${esc(m.body)}</p></div>`).join('')||'<div class="card">Inbox is empty.</div>');
     } else if (view === 'news') {
       const bul = await navApi('/v1/bulletins');
-      el.innerHTML = `<h2>IWBN Community Bulletins</h2>` + ((bul||[]).map(b=>`<div class="card"><b>[${b.channel}] ${b.title}</b><p>${b.body}</p><small>${b.publisher_id}</small></div>`).join('')||'<div class="card">No bulletins yet.</div>');
+      el.innerHTML = `<h2>IWBN Community Bulletins</h2>` + ((bul||[]).map(b=>`<div class="card"><b>[${esc(b.channel)}] ${esc(b.title)}</b><p>${esc(b.body)}</p><small>${esc(b.publisher_id)}</small></div>`).join('')||'<div class="card">No bulletins yet.</div>');
     } else if (view === 'files' || view === 'downloads') {
       const trs = await navApi('/v1/transfers');
-      el.innerHTML = `<h2>IWTP Transfers &amp; Downloads</h2>` + ((trs||[]).map(t=>`<div class="card"><b>${t.file_name}</b> (${t.direction}) — ${t.status} (${t.received_count}/${(t.chunks||[]).length} chunks)</div>`).join('')||'<div class="card">No transfers yet.</div>');
+      el.innerHTML = `<h2>IWTP Transfers &amp; Downloads</h2>` + ((trs||[]).map(t=>`<div class="card"><b>${esc(t.file_name)}</b> (${esc(t.direction)}) — ${esc(t.status)} (${t.received_count}/${(t.chunks||[]).length} chunks)</div>`).join('')||'<div class="card">No transfers yet.</div>');
     } else if (view === 'peers') {
       const peers = await navApi('/v1/peers');
-      el.innerHTML = `<h2>Connected &amp; Known Peers</h2>` + ((peers||[]).map(p=>`<div class="card"><b>${p.name||p.node_id}</b> <code>${p.node_id}</code> [${p.connected?'online':'offline'}]</div>`).join('')||'<div class="card">No peers yet.</div>');
+      el.innerHTML = `<h2>Connected &amp; Known Peers</h2>` + ((peers||[]).map(p=>`<div class="card"><b>${esc(p.name||p.node_id)}</b> <code>${esc(p.node_id)}</code> [${p.connected?'online':'offline'}]</div>`).join('')||'<div class="card">No peers yet.</div>');
     } else if (view === 'services') {
       const svcs = await navApi('/v1/services');
-      el.innerHTML = `<h2>Service Catalog</h2>` + ((svcs||[]).map(s=>`<div class="card"><a style="color:var(--accent);cursor:pointer" onclick="navigate('island://${s.name}/')"><b>${s.name}</b></a> <code>${s.service_id}</code></div>`).join('')||'<div class="card">No services yet.</div>');
+      el.innerHTML = `<h2>Service Catalog</h2>` + ((svcs||[]).map(s=>`<div class="card"><a style="color:var(--accent);cursor:pointer" onclick="navigate('island://${esc(s.name)}/')"><b>${esc(s.name)}</b></a> [${esc(s.type||'website')}] <code>${esc(s.service_id)}</code></div>`).join('')||'<div class="card">No services yet.</div>');
     }
   } catch (e) {
     document.getElementById('net-status').textContent = 'Daemon Offline';
+    document.getElementById('net-status').className = 'badge warn';
     el.innerHTML = `<div class="card"><h3>islandd is not running</h3><p>Start <code>islandd</code> to browse IslandWeave resources.</p></div>`;
   }
 }
+renderSavedBookmarks();
 navigate('island://home', false);
 </script>
 </body>

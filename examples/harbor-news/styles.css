@@ -1,0 +1,6 @@
+body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1.25rem; background: #0b1120; color: #e2e8f0; line-height: 1.6; }
+header { border-bottom: 1px solid #334155; padding-bottom: 1rem; margin-bottom: 1.5rem; }
+h1, h2 { color: #38bdf8; }
+nav a { color: #93c5fd; text-decoration: none; margin-right: .5rem; }
+article { background: #162032; border: 1px solid #2b3b54; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+code { background: #070c17; padding: .15rem .35rem; border-radius: 4px; color: #86efac; }

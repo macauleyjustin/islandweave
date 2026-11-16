@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/islandweave/islandweave/core/beacon"
@@ -30,20 +31,29 @@ func main() {
 	controlAddr := flag.String("control", "127.0.0.1:47471", "Local authenticated control API address")
 	gatewayAddr := flag.String("gateway", "127.0.0.1:47475", "Local HTTP browser gateway address")
 	multicastAddr := flag.String("multicast", beacon.DefaultMulticastAddr, "UDP multicast discovery address")
+	bootstrap := flag.String("bootstrap", "", "Comma-separated bootstrap host:port addresses")
 	relayMode := flag.Bool("relay", false, "Enable headless VPS encrypted relay mode")
 	torPolicy := flag.String("tor-policy", "direct-first", "Tor policy: direct-first, tor-preferred, tor-only")
 	torSocks := flag.String("tor-socks", "", "Tor SOCKS5 proxy address (e.g. 127.0.0.1:9050)")
 	onionSvc := flag.String("onion-service", "", "Configured .onion:port service address")
 	flag.Parse()
 
+	var bootstrapList []string
+	for _, b := range strings.Split(*bootstrap, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			bootstrapList = append(bootstrapList, b)
+		}
+	}
+
 	d, err := daemon.New(daemon.Config{
-		DataDir:       *dataDir,
-		NodeName:      *name,
-		ListenAddr:    *listenAddr,
-		ControlAddr:   *controlAddr,
-		GatewayAddr:   *gatewayAddr,
-		MulticastAddr: *multicastAddr,
-		RelayEnabled:  *relayMode,
+		DataDir:        *dataDir,
+		NodeName:       *name,
+		ListenAddr:     *listenAddr,
+		ControlAddr:    *controlAddr,
+		GatewayAddr:    *gatewayAddr,
+		MulticastAddr:  *multicastAddr,
+		BootstrapPeers: bootstrapList,
+		RelayEnabled:   *relayMode,
 		Tor: tor.Config{
 			Policy:       tor.Policy(*torPolicy),
 			SocksAddr:    *torSocks,

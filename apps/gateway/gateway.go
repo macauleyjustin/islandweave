@@ -139,8 +139,32 @@ func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "site manifest unavailable locally", http.StatusBadGateway)
 		return
 	}
+	source := "cached-replica"
+	if svc.IsLocal {
+		source = "local"
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-IslandWeave-Service-ID", svc.ServiceID)
+	w.Header().Set("X-IslandWeave-Publisher", svc.PublisherID)
+	w.Header().Set("X-IslandWeave-Source", source)
+	// Strictly isolate hosted websites from privileged localhost APIs.
+	w.Header().Set("Content-Security-Policy", "default-src 'self' 'unsafe-inline' data:; connect-src 'self'; object-src 'none'")
+
 	entry, data, err := hosting.ReadSiteFile(s.objStore, manifest, relPath)
 	if err != nil {
+		if os.IsNotExist(err) && relPath == "index.html" {
+			// Serve an HTML file index for shared file libraries or sites without index.html.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprintf(w, "<!doctype html><html><head><meta charset=\"utf-8\"><title>%s (%s)</title><style>body{font-family:system-ui,sans-serif;max-width:780px;margin:2rem auto;padding:0 1rem;background:#0f172a;color:#e2e8f0}a{color:#38bdf8}li{margin:.4rem 0}</style></head><body><h1>%s</h1><p>Type: <code>%s</code> | Publisher: <code>%s</code> | Version: v%d</p><ul>",
+				html.EscapeString(svc.Name), html.EscapeString(svc.Type),
+				html.EscapeString(svc.Name), html.EscapeString(svc.Type), html.EscapeString(svc.PublisherID), svc.SiteVersion)
+			for _, f := range manifest.Files {
+				fmt.Fprintf(w, `<li><a href="/site/%s/%s">%s</a> (%d bytes, %s)</li>`,
+					html.EscapeString(svc.Name), html.EscapeString(f.Path), html.EscapeString(f.Path), f.Size, html.EscapeString(f.ContentType))
+			}
+			fmt.Fprint(w, "</ul></body></html>")
+			return
+		}
 		if os.IsNotExist(err) {
 			http.NotFound(w, r)
 			return
@@ -149,16 +173,6 @@ func (s *Server) handleSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	source := "cached-replica"
-	if svc.IsLocal {
-		source = "local"
-	}
 	w.Header().Set("Content-Type", entry.ContentType)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("X-IslandWeave-Service-ID", svc.ServiceID)
-	w.Header().Set("X-IslandWeave-Publisher", svc.PublisherID)
-	w.Header().Set("X-IslandWeave-Source", source)
-	// Strictly isolate hosted websites from privileged localhost APIs.
-	w.Header().Set("Content-Security-Policy", "default-src 'self' 'unsafe-inline' data:; connect-src 'self'; object-src 'none'")
 	_, _ = w.Write(data)
 }

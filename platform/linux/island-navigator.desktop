@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=IslandWeave Navigator
+Comment=Offline-first decentralized browser for island:// services
+Exec=island-navigator
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;

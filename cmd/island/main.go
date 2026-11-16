@@ -200,7 +200,23 @@ func main() {
 	case "discover":
 		c, err := newClient(*dataDir)
 		fatalIf(err)
-		out, code, err := c.do(http.MethodGet, "/v1/discover", nil)
+		out, code, err := c.do(http.MethodGet, "/v1/discover/merged", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "routes":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/routes", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "sync":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		var peerID string
+		if len(rest) > 0 {
+			peerID = rest[0]
+		}
+		out, code, err := c.do(http.MethodPost, "/v1/sync", map[string]string{"peer_id": peerID})
 		fatalIf(err)
 		printResp(out, code)
 	case "peers":
@@ -487,13 +503,63 @@ func main() {
 		fatalIf(err)
 		printResp(out, code)
 	case "server":
-		if len(rest) < 1 || (rest[0] != "enable" && rest[0] != "disable") {
-			fmt.Fprintln(os.Stderr, "usage: island server <enable|disable>")
+		if len(rest) < 1 || (rest[0] != "enable" && rest[0] != "disable" && rest[0] != "status") {
+			fmt.Fprintln(os.Stderr, "usage: island server <enable|disable|status>")
 			os.Exit(1)
 		}
 		c, err := newClient(*dataDir)
 		fatalIf(err)
+		if rest[0] == "status" {
+			out, code, err := c.do(http.MethodGet, "/v1/gateway", nil)
+			fatalIf(err)
+			printResp(out, code)
+			return
+		}
 		out, code, err := c.do(http.MethodPost, "/v1/server/enable", map[string]bool{"relay_enabled": rest[0] == "enable"})
+		fatalIf(err)
+		printResp(out, code)
+	case "gateway":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/gateway", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "share":
+		if len(rest) < 1 {
+			fmt.Fprintln(os.Stderr, "usage: island share <dir> [--name <alias>] [--island <id>]")
+			os.Exit(1)
+		}
+		absDir, err := filepath.Abs(rest[0])
+		fatalIf(err)
+		fs := flag.NewFlagSet("share", flag.ExitOnError)
+		svcName := fs.String("name", "", "Shared library alias")
+		islID := fs.String("island", "", "Optional Island ID")
+		_ = fs.Parse(rest[1:])
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodPost, "/v1/shares", map[string]string{
+			"dir":       absDir,
+			"name":      *svcName,
+			"island_id": *islID,
+		})
+		fatalIf(err)
+		printResp(out, code)
+	case "security":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/security/status", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "activity":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/activity", nil)
+		fatalIf(err)
+		printResp(out, code)
+	case "diagnostics":
+		c, err := newClient(*dataDir)
+		fatalIf(err)
+		out, code, err := c.do(http.MethodGet, "/v1/diagnostics", nil)
 		fatalIf(err)
 		printResp(out, code)
 	case "tor":
@@ -610,7 +676,7 @@ func fatalIf(err error) {
 }
 
 func printUsage() {
-	fmt.Println(`IslandWeave CLI (v0.1.0)
+	fmt.Println(`IslandWeave CLI (v1.0.0)
 
 Usage:
   island [--data-dir <dir>] <command> [args]
@@ -624,8 +690,10 @@ Commands:
   invite <island-id>                       Create a signed Island invite token
   join <token>                             Join an Island using an invite token
   leave <island-id>                        Leave an Island
-  discover                                 List nearby Beacon-discovered peers
+  discover                                 List Beacon + peer-exchange discovered peers
   peers                                    List known and connected peers
+  routes                                   Show multi-transport IWP-ROUTE table
+  sync [peer-id]                           Trigger IWP-SYNC anti-entropy state sync
   connect <host:port>                      Connect to a peer via IWP-LINK
   trust <node-id>                          Mark a peer as trusted
   revoke <node-id>                         Revoke a peer and close active link
@@ -633,16 +701,19 @@ Commands:
   send-msg <node-id> <message>             Send an encrypted message to a peer
   messages                                 List stored messages
   host <dir> [--name <name>]               Host a static website on IslandWeave
+  share <dir> [--name <name>]              Publish a browsable Shared File Library
   services                                 List hosted and cached services
   fetch <service-name-or-id>               Fetch and cache a peer's website locally
+  gateway list                             List Gateway & hosted endpoint mappings
   send <file> --to <node-id>               Send a file via IWTP
   transfers                                List active and completed file transfers
   cancel-transfer <transfer-id>            Cancel a file transfer
   courier status|queue|send|export|import  Manage delay-tolerant courier mode
-  mail send|inbox|outbox|sent              Manage encrypted IWMP mail
+  mail send|inbox|outbox|drafts|sent       Manage encrypted IWMP mail
   publish / bulletins                      Publish or read signed IWBN bulletins
-  server status                            Inspect relay/gateway server status
+  server enable|disable|status             Manage or inspect VPS relay server mode
   tor status|config                        Inspect or configure Tor SOCKS5 policy
   federation list|revoke                   Manage inter-Island federation agreements
-  satellite status|passes                  Inspect IWST satellite pass status`)
+  satellite status|passes                  Inspect IWST satellite pass status
+  security / activity / diagnostics        Inspect security posture, logs, and diagnostics`)
 }

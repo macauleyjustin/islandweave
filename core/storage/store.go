@@ -15,6 +15,7 @@ import (
 	"github.com/islandweave/islandweave/federation"
 	"github.com/islandweave/islandweave/protocols/iwbn"
 	"github.com/islandweave/islandweave/protocols/iwmp"
+	"github.com/islandweave/islandweave/protocols/iwst"
 	_ "modernc.org/sqlite"
 )
 
@@ -205,6 +206,33 @@ func (s *Store) migrate() error {
 			expires_at INTEGER NOT NULL,
 			revoked INTEGER NOT NULL DEFAULT 0,
 			signature TEXT NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS navigator_bookmarks (
+			uri TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS navigator_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			uri TEXT NOT NULL,
+			title TEXT NOT NULL,
+			visited_at INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS activity_log (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			category TEXT NOT NULL,
+			summary TEXT NOT NULL,
+			peer_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);`,
+		`CREATE TABLE IF NOT EXISTS satellite_logs (
+			pass_id TEXT PRIMARY KEY,
+			satellite_name TEXT NOT NULL,
+			bytes_transferred INTEGER NOT NULL,
+			bundles_delivered INTEGER NOT NULL,
+			interrupted INTEGER NOT NULL DEFAULT 0,
+			completed_at INTEGER NOT NULL
 		);`,
 	}
 	for _, stmt := range stmts {
@@ -911,6 +939,157 @@ func (s *Store) ListFederations() ([]*federation.Agreement, error) {
 		ag.AllowDTNForward = dInt != 0
 		ag.Revoked = rInt != 0
 		out = append(out, &ag)
+	}
+	return out, rows.Err()
+}
+
+// BookmarkEntry represents a saved IslandWeave Navigator bookmark.
+type BookmarkEntry struct {
+	URI       string `json:"uri"`
+	Title     string `json:"title"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+// HistoryEntry represents a Navigator browsing history entry.
+type HistoryEntry struct {
+	ID        int64  `json:"id"`
+	URI       string `json:"uri"`
+	Title     string `json:"title"`
+	VisitedAt int64  `json:"visited_at"`
+}
+
+// ActivityEntry records user-visible daemon/network/sync events.
+type ActivityEntry struct {
+	ID        int64  `json:"id"`
+	Category  string `json:"category"`
+	Summary   string `json:"summary"`
+	PeerID    string `json:"peer_id,omitempty"`
+	Status    string `json:"status"`
+	CreatedAt int64  `json:"created_at"`
+}
+
+func (s *Store) SaveBookmark(uri, title string) error {
+	if title == "" {
+		title = uri
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO navigator_bookmarks (uri, title, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(uri) DO UPDATE SET title = excluded.title`,
+		uri, title, time.Now().Unix(),
+	)
+	return err
+}
+
+func (s *Store) DeleteBookmark(uri string) error {
+	_, err := s.db.Exec(`DELETE FROM navigator_bookmarks WHERE uri = ?`, uri)
+	return err
+}
+
+func (s *Store) ListBookmarks() ([]BookmarkEntry, error) {
+	rows, err := s.db.Query(`SELECT uri, title, created_at FROM navigator_bookmarks ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BookmarkEntry
+	for rows.Next() {
+		var b BookmarkEntry
+		if err := rows.Scan(&b.URI, &b.Title, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) AddHistory(uri, title string) error {
+	if title == "" {
+		title = uri
+	}
+	_, err := s.db.Exec(`INSERT INTO navigator_history (uri, title, visited_at) VALUES (?, ?, ?)`, uri, title, time.Now().Unix())
+	return err
+}
+
+func (s *Store) ListHistory(limit int) ([]HistoryEntry, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT id, uri, title, visited_at FROM navigator_history ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []HistoryEntry
+	for rows.Next() {
+		var h HistoryEntry
+		if err := rows.Scan(&h.ID, &h.URI, &h.Title, &h.VisitedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RecordActivity(category, summary, peerID, status string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO activity_log (category, summary, peer_id, status, created_at) VALUES (?, ?, ?, ?, ?)`,
+		category, summary, peerID, status, time.Now().Unix(),
+	)
+	return err
+}
+
+func (s *Store) ListActivity(limit int) ([]ActivityEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT id, category, summary, peer_id, status, created_at FROM activity_log ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ActivityEntry
+	for rows.Next() {
+		var a ActivityEntry
+		if err := rows.Scan(&a.ID, &a.Category, &a.Summary, &a.PeerID, &a.Status, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) SavePassLog(p *iwst.PassLog) error {
+	intFlag := 0
+	if p.Interrupted {
+		intFlag = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO satellite_logs (pass_id, satellite_name, bytes_transferred, bundles_delivered, interrupted, completed_at)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(pass_id) DO UPDATE SET bytes_transferred=excluded.bytes_transferred, bundles_delivered=excluded.bundles_delivered, interrupted=excluded.interrupted, completed_at=excluded.completed_at`,
+		p.PassID, p.SatelliteName, p.BytesTransferred, p.BundlesDelivered, intFlag, p.CompletedAt,
+	)
+	return err
+}
+
+func (s *Store) ListPassLogs(limit int) ([]iwst.PassLog, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.Query(`SELECT pass_id, satellite_name, bytes_transferred, bundles_delivered, interrupted, completed_at FROM satellite_logs ORDER BY completed_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []iwst.PassLog
+	for rows.Next() {
+		var p iwst.PassLog
+		var intFlag int
+		if err := rows.Scan(&p.PassID, &p.SatelliteName, &p.BytesTransferred, &p.BundlesDelivered, &intFlag, &p.CompletedAt); err != nil {
+			return nil, err
+		}
+		p.Interrupted = intFlag != 0
+		out = append(out, p)
 	}
 	return out, rows.Err()
 }

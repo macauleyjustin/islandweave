@@ -1,0 +1,5 @@
+ISLANDWEAVE OFFLINE COMMUNITY CHECKLIST
+1. Verify local node identity: island status
+2. Enable local LAN Beacon if safe: island beacon on --mode restricted
+3. Export urgent bundles for physical courier: island courier export ./pack.iwcourier
+4. Synchronize on reconnect: island sync

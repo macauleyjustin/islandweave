@@ -55,6 +55,21 @@ func (d *Daemon) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/federation/revoke", d.handleFederationRevoke)
 	mux.HandleFunc("/v1/satellite/status", d.handleSatelliteStatus)
 	mux.HandleFunc("/v1/satellite/passes", d.handleSatellitePasses)
+	mux.HandleFunc("/v1/satellite/simulate", d.handleSatelliteSimulate)
+	mux.HandleFunc("/v1/routes", d.handleRoutes)
+	mux.HandleFunc("/v1/discover/merged", d.handleDiscoverMerged)
+	mux.HandleFunc("/v1/sync", d.handleSyncNow)
+	mux.HandleFunc("/v1/sync/history", d.handleSyncHistory)
+	mux.HandleFunc("/v1/shares", d.handleShareCreate)
+	mux.HandleFunc("/v1/gateway", d.handleGatewayList)
+	mux.HandleFunc("/v1/security/status", d.handleSecurityStatus)
+	mux.HandleFunc("/v1/security/audit", d.handleSecurityAudit)
+	mux.HandleFunc("/v1/security/permissions", d.handleSecurityPermissions)
+	mux.HandleFunc("/v1/bandwidth", d.handleBandwidth)
+	mux.HandleFunc("/v1/activity", d.handleActivity)
+	mux.HandleFunc("/v1/diagnostics", d.handleDiagnostics)
+	mux.HandleFunc("/v1/navigator/bookmarks", d.handleNavBookmarks)
+	mux.HandleFunc("/v1/navigator/history", d.handleNavHistory)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -76,6 +91,7 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 	peers, _ := d.store.ListPeers()
 	d.mu.RLock()
 	activeLinks := len(d.links)
+	relayOn := d.cfg.RelayEnabled
 	d.mu.RUnlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -84,12 +100,14 @@ func (d *Daemon) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"public_key":     base64.StdEncoding.EncodeToString(d.id.PublicKey),
 		"enc_public_key": base64.StdEncoding.EncodeToString(d.id.EncPublicKey),
 		"p2p_addr":       d.P2PAddr(),
-		"control_addr": d.ControlAddr(),
-		"gateway_addr": d.GatewayAddr(),
-		"islands":      len(isl),
-		"known_peers":  len(peers),
-		"active_links": activeLinks,
-		"beacon":       d.beacon.Status(),
+		"control_addr":   d.ControlAddr(),
+		"gateway_addr":   d.GatewayAddr(),
+		"islands":        len(isl),
+		"known_peers":    len(peers),
+		"active_links":   activeLinks,
+		"relay_enabled":  relayOn,
+		"traffic":        d.sec.Traffic.Snapshot(),
+		"beacon":         d.beacon.Status(),
 	})
 }
 
@@ -310,6 +328,8 @@ func (d *Daemon) handlePeerRevoke(w http.ResponseWriter, r *http.Request) {
 		delete(d.links, req.NodeID)
 	}
 	d.mu.Unlock()
+	d.sec.RecordAudit("revocation", req.NodeID, "deny", "peer trust revoked and active link closed")
+	_ = d.store.RecordActivity("security", "Revoked peer authorization", req.NodeID, "revoked")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked", "node_id": req.NodeID})
 }
 
@@ -902,6 +922,7 @@ func (d *Daemon) handleSatellitePasses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := time.Now()
+	completed, _ := d.store.ListPassLogs(20)
 	passes := []map[string]any{
 		{
 			"pass_id":        "sim-pass-1",
@@ -910,7 +931,11 @@ func (d *Daemon) handleSatellitePasses(w http.ResponseWriter, r *http.Request) {
 			"end_time":       now.Add(23 * time.Minute).Unix(),
 			"bandwidth_bps":  9600,
 			"max_bytes":      576000,
+			"status":         "scheduled",
 		},
 	}
-	writeJSON(w, http.StatusOK, passes)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"scheduled": passes,
+		"completed": completed,
+	})
 }
